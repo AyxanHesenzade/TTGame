@@ -52,6 +52,8 @@ const CFG = {
   maxDefenders: 60,
   autoSoldierEvery: 2.5,   // pulsuz "adi" əsgər intervalı
   nukeCastleDmg: 10,
+  idleAfter: 8,            // bu qədər saniyə heç bir hərəkət olmasa → sakit rejim
+  idleArmy: 9,             // sakit rejimdə hər tərəfdə maksimum əsgər
   victoryPause: 11,        // qala alınandan sonra yeni raund (san)
   roundTime: 300,          // qalanı almaq üçün vaxt (san)
   // Müdafiə səviyyələri (qala canına görə)
@@ -73,6 +75,7 @@ if (new URLSearchParams(location.search).has('obs')) document.body.classList.add
 // Qala geometriyası (ortada)
 const CASTLE = { x: 190, y: 660, w: 700, h: 420 };
 const GATE_Y = CASTLE.y + CASTLE.h;   // darvaza xətti
+const MID_Y = Math.round((GATE_Y + H - 120) / 2);   // sakit rejimdə cəbhə xətti (meydanın ortası)
 
 // ---- Qala zədəsi: hər hissə müəyyən zədə həddində (th, 0..1) görünür ----
 const CASTLE_PAD = 60;
@@ -141,7 +144,7 @@ const STATS = (() => { try { return JSON.parse(localStorage.getItem('irevan_stat
 const saveStats = () => { try { localStorage.setItem('irevan_stats', JSON.stringify(STATS)); } catch (_) {} };
 const fmtT = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 let tanks = [], tankT = 0, stage = 0, bannerMsg = null;
-let dangerT = 0, archerT = 0, capHero = null, timeLeft = 0, rage = false, rageT = 0, rageBanner = 0, lastHitter = null, heartT = 0;
+let idle = false, lastActivity = performance.now(), dangerT = 0, archerT = 0, capHero = null, timeLeft = 0, rage = false, rageT = 0, rageBanner = 0, lastHitter = null, heartT = 0;
 let introT = 0, lives, state, stateT, flagY, azFlagY, shake = 0, defT = 0, autoT = 0, round = 1;
 const board = new Map();       // ad -> {name, pic, kills, coins, atom}
 const picCache = new Map();
@@ -305,6 +308,7 @@ function onGift(e) {
   for (let i = 0; i < n; i++) setTimeout(() => onGiftOne({ ...e, count: 1 }), i * 180);
 }
 function onGiftOne({ user, avatar, coins = 1, giftName = '' }) {
+  lastActivity = performance.now();
   if (state !== 'play') return;
   const pic = getPic(user, avatar); addBoard(user, pic, coins); addCoins(user, coins); comboAdd();
   floaters.push({ x: W / 2, y: H - 260, txt: `${user} +${coins}`, t: 1.6, c: '#ffd34d', s: 46 });
@@ -367,6 +371,7 @@ function arrowRain(user, pic) {
 }
 // Like → profilsiz adi əsgər
 function onLike() {
+  lastActivity = performance.now();
   if (state !== 'play') return;
   SFX.spawn(); spawnUnit('az', null, null);
 }
@@ -477,6 +482,7 @@ function addCoins(name, coins) {
 // ================= FOLLOW / PAYLAŞMA / ŞƏRH =================
 // Follow → Bayraqdar: böyük bayraq daşıyır, yanındakı əsgərləri sürətləndirir
 function onFollow({ user, avatar }) {
+  lastActivity = performance.now();
   if (state !== 'play') return;
   const u = spawnUnit('az', user, getPic(user, avatar)); u.bearer = true; u.hp = 8;
   announce(`➕ ${user} — BAYRAQDAR!`, "#9fe3ff");
@@ -484,6 +490,7 @@ function onFollow({ user, avatar }) {
 }
 // Paylaşma → 3 əsgərlik dəstə
 function onShare({ user }) {
+  lastActivity = performance.now();
   if (state !== 'play') return;
   for (let i = 0; i < 3; i++) setTimeout(() => spawnUnit('az', null, null), i * 150);
   announce(`🔗 ${user} paylaşdı: +3 əsgər`, "#9fe3ff");
@@ -491,6 +498,7 @@ function onShare({ user }) {
 // Şərh → öz şəkli ilə adi əsgər (hər adam 20 saniyədə bir dəfə)
 const chatCd = new Map();
 function onChat({ user, avatar, text = '' }) {
+  lastActivity = performance.now();
   if (state !== 'play') return;
   cryAdd(user);
   const now = performance.now(); if (now - (chatCd.get(user) || -1e9) < 20000) return; chatCd.set(user, now);
@@ -812,7 +820,7 @@ function updTanks(dt) {
     t.aim = angLerp(t.aim, t.aimTo, Math.min(1, dt * 2.5));   // qüllə yavaş dönür
     let off = t.aimTo - t.aim; while (off > Math.PI) off -= 2 * Math.PI; while (off < -Math.PI) off += 2 * Math.PI;
     t.cd -= dt;
-    if (v && t.cd <= 0 && Math.abs(off) < .15 && state === 'play') { t.cd = 1.6; t.recoil = 1; t.flash = 1; SFX.cannon(); shake = Math.max(shake, 6);
+    if (v && t.cd <= 0 && Math.abs(off) < .15 && state === 'play' && !idle) { t.cd = 1.6; t.recoil = 1; t.flash = 1; SFX.cannon(); shake = Math.max(shake, 6);
       const mx = t.x + Math.cos(t.aim) * 120, my = t.y - 62 + Math.sin(t.aim) * 120;
       for (let i = 0; i < 8; i++) parts.push({ x: mx, y: my, vx: Math.cos(t.aim) * 150 + (Math.random() - .5) * 100, vy: Math.sin(t.aim) * 150 + (Math.random() - .5) * 100, t: .6, c: 'rgba(210,210,210,.6)', conf: 1, sz: 14 + Math.random() * 10 });
       shots.push({ kind: 'tshell', x: mx, y: my, tx: v.x, ty: v.y - 20, t: 0, dur: .35 }); }
@@ -894,11 +902,24 @@ function update(dt) {
   if (state === 'play') {
     defT += dt; autoT += dt;
     const nd = units.filter(u => u.side === 'en' && !u.dead).length;
-    if (defT > CFG.defenderEvery / (rage ? CFG.rageSpawnMul : 1) && nd < (rage ? CFG.rageMaxDefenders : CFG.maxDefenders)) { defT = 0;
-      for (let i = 0; i < CFG.defenderGroup; i++) spawnUnit('en', null, null); }
-    if (autoT > CFG.autoSoldierEvery) { autoT = 0; spawnUnit('az', null, null); }
-    // 3) vaxt limiti
-    timeLeft -= dt; roundT += dt;
+    idle = performance.now() - lastActivity > CFG.idleAfter * 1000;
+    if (idle) {
+      // SAKİT REJİM: heç kim heç nə etmir → hər iki tərəf bərabər, döyüş gedir, heç kim udmur
+      // hər iki tərəfdə HƏMİŞƏ eyni sayda: çatışmayan tərəfə dərhal əsgər, sonra cüt-cüt artır
+      const na = units.filter(u => u.side === 'az' && !u.dead).length;
+      if (na < nd) spawnUnit('az', null, null);          // çatışmayan tərəf dərhal doldurulur
+      else if (nd < na) spawnUnit('en', null, null);
+      else if (defT > .6) { defT = 0;
+        if (na < CFG.idleArmy) { const x = 140 + Math.random() * 800;
+          spawnUnit('az', null, null).x = x; spawnUnit('en', null, null).x = x; } }
+    } else {
+      if (defT > CFG.defenderEvery / (rage ? CFG.rageSpawnMul : 1) && nd < (rage ? CFG.rageMaxDefenders : CFG.maxDefenders)) { defT = 0;
+        for (let i = 0; i < CFG.defenderGroup; i++) spawnUnit('en', null, null); }
+      if (autoT > CFG.autoSoldierEvery) { autoT = 0; spawnUnit('az', null, null); }
+    }
+    // 3) vaxt limiti (sakit rejimdə dayanır)
+    if (!idle) timeLeft -= dt;
+    roundT += dt;
     // itki qorxusu: uzun müddət zərbə olmasa qala canını bərpa edir
     idleT += dt;
     if (idleT > CFG.regenAfter && lives < CFG.castleLives) { regenOn = true; regenT += dt;
@@ -908,7 +929,7 @@ function update(dt) {
     if (timeLeft <= 30 && timeLeft > 0) { heartT -= dt; if (heartT <= 0) { heartT = timeLeft < 10 ? .5 : 1; SFX.heart(); } }
     if (timeLeft <= 0) { state = 'failed'; stateT = 0; SFX.fail(); }
     // 2) qala cavab atəşi
-    if (!nuke) {
+    if (!nuke && !idle) {   // sakit rejimdə oxçu/top/tank fasilə verir
       if (stage >= 1) { archerT -= dt; if (archerT <= 0) { archerT = CFG.archerEvery; archerShoot(); } }
       if (stage >= 2) { rageT -= dt;
         if (rageT <= 0) { const k = lives / CFG.stageCannons;
@@ -930,10 +951,12 @@ function update(dt) {
     if (foe && fd < 55) {                              // qılınc döyüşü
       if (u.cd <= 0) { u.cd = .8; u.swing = 1; SFX.sword(); sparks((u.x + foe.x) / 2, (u.y + foe.y) / 2 - 60); foe.hp -= u.side === 'az' ? ((u.pic && !u.chat) ? 2 : 1) * furyMul() : 1; if (foe.hp <= 0) killUnit(foe, u.name); }
     } else if (u.side === 'az' && u.y <= GATE_Y + 15) { // qalanı vur
-      if (u.cd <= 0) { u.cd = 1; u.swing = 1; hitCastle(((u.pic && !u.chat) ? 2 : 1) * furyMul(), u.name); u.hp--; if (u.hp <= 0) killUnit(u); }
+      if (u.cd <= 0) { u.cd = 1; u.swing = 1; if (!idle || u.name) hitCastle(((u.pic && !u.chat) ? 2 : 1) * furyMul(), u.name); u.hp--; if (u.hp <= 0) killUnit(u); }
     } else {
       let tx = foe && fd < 260 ? foe.x : u.x, ty = foe && fd < 260 ? foe.y : (u.side === 'az' ? GATE_Y : H - 80);
       if (u.side === 'az' && !(foe && fd < 260)) tx = Math.min(Math.max(u.x, CASTLE.x + 60), CASTLE.x + CASTLE.w - 60);
+      // sakit rejim: adsız əsgərlər meydanın ortasındakı cəbhə xəttinə gedib orada dayanır
+      if (idle && !u.name && !(foe && fd < 260)) { tx = u.x; ty = MID_Y + (u.side === 'az' ? 35 : -35); if (Math.abs(ty - u.y) < 6) { u.walk = 0; continue; } }
       const a = Math.atan2(ty - u.y, tx - u.x);
       const sp = u.spd * (u.boostT > 0 ? 1.5 : 1) * (fury && u.side === 'az' ? 1.3 : 1); u.boostT = Math.max(0, (u.boostT || 0) - dt);
       u.x += Math.cos(a) * sp * dt; u.y += Math.sin(a) * sp * dt; u.walk += dt * 10;
