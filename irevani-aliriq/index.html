@@ -71,7 +71,7 @@ const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 if (new URLSearchParams(location.search).has('obs')) document.body.classList.add('obs');
 
 // Qala geometriyası (ortada)
-const CASTLE = { x: 190, y: 560, w: 700, h: 420 };
+const CASTLE = { x: 190, y: 660, w: 700, h: 420 };
 const GATE_Y = CASTLE.y + CASTLE.h;   // darvaza xətti
 
 // ---- Qala zədəsi: hər hissə müəyyən zədə həddində (th, 0..1) görünür ----
@@ -141,7 +141,7 @@ const STATS = (() => { try { return JSON.parse(localStorage.getItem('irevan_stat
 const saveStats = () => { try { localStorage.setItem('irevan_stats', JSON.stringify(STATS)); } catch (_) {} };
 const fmtT = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 let tanks = [], tankT = 0, stage = 0, bannerMsg = null;
-let archerT = 0, capHero = null, timeLeft = 0, rage = false, rageT = 0, rageBanner = 0, lastHitter = null, heartT = 0;
+let dangerT = 0, archerT = 0, capHero = null, timeLeft = 0, rage = false, rageT = 0, rageBanner = 0, lastHitter = null, heartT = 0;
 let introT = 0, lives, state, stateT, flagY, azFlagY, shake = 0, defT = 0, autoT = 0, round = 1;
 const board = new Map();       // ad -> {name, pic, kills, coins, atom}
 const picCache = new Map();
@@ -158,7 +158,7 @@ function reset() {
   combo = 0; comboT = 0; fury = 0; pickWeather();
   firstBlood = false; announces = []; chest = null; chestT = 40; simurq = null;
   corpses = [];
-  timeLeft = CFG.roundTime; rage = false; rageT = 0; rageBanner = 0; lastHitter = null;
+  timeLeft = CFG.roundTime; rage = false; rageT = 0; rageBanner = 0; lastHitter = null; dangerT = 0;
   board.clear();
 }
 
@@ -236,14 +236,33 @@ function killUnit(u, by) {
   }
 }
 // Böyük elan (ekranın ortası, növbə ilə)
+// ---- Bildiriş axını: yeni yazı yuxarıda çıxır, köhnələr aşağı sürüşür və solur (heç vaxt üst-üstə düşmür) ----
 let announces = [], firstBlood = false;
-function announce(text, color) { announces.push({ text, color, t: 2.2 }); if (announces.length > 3) announces.shift(); }
+const TOAST_TOP = 470, TOAST_GAP = 74, TOAST_MAX = 5;
+function announce(text, color = '#fff', opt = {}) {
+  announces.unshift({ text, color, sub: opt.sub, bg: opt.bg || 'rgba(0,0,0,.6)', size: opt.size || 46, life: opt.life || 3.2, age: 0, y: TOAST_TOP - 40 });
+  if (announces.length > TOAST_MAX) announces.length = TOAST_MAX;
+}
 function drawAnnounce(dt) {
-  const a = announces[0]; if (!a) return;
-  a.t -= dt; if (a.t <= 0) { announces.shift(); return; }
-  const k = a.t > 1.9 ? (2.2 - a.t) / .3 : a.t < .3 ? a.t / .3 : 1, s = .7 + .3 * Math.min(1, k * 1.2);
-  ctx.globalAlpha = Math.max(0, k); ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0, 420, W, 90);
-  ctx.save(); ctx.translate(W / 2, 465); ctx.scale(s, s); txt(a.text, 0, 0, 52, a.color); ctx.restore(); ctx.globalAlpha = 1;
+  let ty = TOAST_TOP;
+  for (const a of announces) {
+    a.age += dt;
+    const h = a.sub ? TOAST_GAP + 40 : TOAST_GAP;
+    const target = ty + a.age * 18;                          // yaşlandıqca yavaş aşağı enir
+    a.y += (target - a.y) * Math.min(1, dt * 7);
+    const alpha = Math.min(1, a.age / .25, (a.life - a.age) / .6);
+    if (alpha > 0) {
+      const pop = a.age < .25 ? .8 + .2 * (a.age / .25) : 1;
+      ctx.globalAlpha = alpha; ctx.font = `bold ${a.size}px Arial`;
+      const w = Math.min(W - 40, ctx.measureText(a.text).width + 60);
+      ctx.fillStyle = a.bg; ctx.beginPath(); ctx.roundRect(W / 2 - w / 2, a.y - a.size * .75, w, (a.sub ? a.size * 1.5 + 40 : a.size * 1.5), 18); ctx.fill();
+      ctx.save(); ctx.translate(W / 2, a.y); ctx.scale(pop, pop); txt(a.text, 0, 0, a.size, a.color);
+      if (a.sub) txt(a.sub, 0, a.size * .5 + 22, 32, '#ffd34d'); ctx.restore();
+    }
+    ty += h;
+  }
+  ctx.globalAlpha = 1;
+  announces = announces.filter(a => a.age < a.life);
 }
 function hitCastle(n, by) {
   if (state !== 'play') return;
@@ -268,7 +287,7 @@ function checkStage() {
   if (lives <= 0) return;
   const s = lives <= CFG.stageTank ? 3 : lives <= CFG.stageCannons ? 2 : lives <= CFG.stageArchers ? 1 : 0;
   while (stage < s) {
-    stage++; rage = true; rageBanner = 3.5; bannerMsg = STAGES[stage]; SFX.siren();
+    stage++; rage = true; bannerMsg = STAGES[stage]; SFX.siren(); announce(bannerMsg[0], '#fff', { sub: bannerMsg[1], bg: 'rgba(160,0,0,.8)', size: 54, life: 3.6 });
     for (let i = 0; i < CFG.rageBurst; i++) setTimeout(() => state === 'play' && spawnUnit('en', null, null), i * 120);
     if (stage === 3) spawnTank();
   }
@@ -340,7 +359,7 @@ function drawRam(r) {
 }
 // ---- Ox yağışı: göydən 30 ox müdafiəçilərin üstünə ----
 function arrowRain(user, pic) {
-  floaters.push({ x: W / 2, y: 1100, txt: `🏹 ${user}: OX YAĞIŞI!`, t: 2.2, c: '#9fe3ff', s: 56 });
+  announce(`🏹 ${user}: OX YAĞIŞI!`, '#9fe3ff');
   for (let i = 0; i < 30; i++) setTimeout(() => {
     const t = pickTarget(); const tx = t.castle ? 100 + Math.random() * (W - 200) : t.x, ty = t.castle ? GATE_Y + 60 + Math.random() * 600 : t.y;
     shots.push({ kind: 'rarrow', x: tx + 120, y: -60, tx, ty: ty - 30, t: 0, dur: .8, user });
@@ -430,13 +449,13 @@ function comboAdd() {
   combo = comboT > 0 ? combo + 1 : 1; comboT = 10; comboFlash = .6;
   if (combo >= 2) SFX.spawn();
   if (combo % 5 === 0) { fury = 8; shake = Math.max(shake, 12); SFX.siren();
-    floaters.push({ x: W / 2, y: 1000, txt: `🔥 KOMBO x${combo} — QƏZƏB! 🔥`, t: 2.4, c: '#ff7a1a', s: 64 }); }
+    announce(`🔥 KOMBO x${combo} — QƏZƏB! 🔥`, '#ff7a1a', { size: 52 }); }
 }
 function updCombo(dt) { comboT = Math.max(0, comboT - dt); if (!comboT) combo = 0; fury = Math.max(0, fury - dt); comboFlash = Math.max(0, comboFlash - dt); }
 const furyMul = () => fury > 0 ? 2 : 1;
 function drawCombo() {
   if (combo < 2 && !fury) return;
-  const x = W - 160, y = 440, s = 1 + comboFlash * .5;
+  const x = W - 160, y = 470, s = 1 + comboFlash * .5;
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
   txt(`KOMBO x${combo}`, 0, 0, 44, combo >= 5 ? '#ff7a1a' : '#ffd34d'); ctx.restore();
   ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x - 120, y + 30, 240, 10);
@@ -460,14 +479,14 @@ function addCoins(name, coins) {
 function onFollow({ user, avatar }) {
   if (state !== 'play') return;
   const u = spawnUnit('az', user, getPic(user, avatar)); u.bearer = true; u.hp = 8;
-  floaters.push({ x: W / 2, y: H - 300, txt: `➕ ${user} — BAYRAQDAR!`, t: 2, c: '#9fe3ff', s: 46 });
+  announce(`➕ ${user} — BAYRAQDAR!`, "#9fe3ff");
   SFX.hero();
 }
 // Paylaşma → 3 əsgərlik dəstə
 function onShare({ user }) {
   if (state !== 'play') return;
   for (let i = 0; i < 3; i++) setTimeout(() => spawnUnit('az', null, null), i * 150);
-  floaters.push({ x: W / 2, y: H - 300, txt: `🔗 ${user} paylaşdı: +3 əsgər`, t: 2, c: '#9fe3ff', s: 42 });
+  announce(`🔗 ${user} paylaşdı: +3 əsgər`, "#9fe3ff");
 }
 // Şərh → öz şəkli ilə adi əsgər (hər adam 20 saniyədə bir dəfə)
 const chatCd = new Map();
@@ -497,7 +516,7 @@ function drawUpcoming() {
   if (state !== 'play') return;
   const items = [];
   if (!chest) items.push(`💰 Sandıq ${fmtT(Math.max(0, chestT))}`);
-  items.forEach((s, i) => txt(s, W - 20, 340 + i * 34, 24, '#fff', 'right'));
+  items.forEach((s, i) => txt(s, W - 20, 380 + i * 34, 26, '#fff', 'right'));
 }
 
 // ================= 💀 CƏSƏDLƏR + QIĞILCIM =================
@@ -540,7 +559,7 @@ function cryAdd(user) {
   }
 }
 function drawCry() {
-  const x = 20, y = H - 70, w = 300, s = 1 + cryFlash * .3; cryFlash = Math.max(0, cryFlash - .016);
+  const x = W - 340, y = 640, w = 300, s = 1 + cryFlash * .3; cryFlash = Math.max(0, cryFlash - .016);
   ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(x, y - 30, w + 20, 80);
   txt('📣 Döyüş nərəsi', x + 10, y - 10, 24, '#9fe3ff', 'left');
   ctx.fillStyle = '#123'; ctx.fillRect(x + 10, y + 10, w, 22);
@@ -600,25 +619,86 @@ function updSimurq(dt) {
 }
 function drawSimurq() {
   if (!simurq) return;
-  const { x, y, t, pic } = simurq, flap = Math.sin(t * 9);
+  const { x, y, t, pic } = simurq, flap = Math.sin(t * 7), now = performance.now();
+  // ---- arxada qızılı aura ----
+  let gr = ctx.createRadialGradient(x, y, 20, x, y, 340);
+  gr.addColorStop(0, 'rgba(255,220,120,.55)'); gr.addColorStop(.4, 'rgba(255,150,40,.25)'); gr.addColorStop(1, 'rgba(255,120,20,0)');
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, 340, 0, 7); ctx.fill();
+  // ---- qığılcım izi ----
+  for (let i = 0; i < 4; i++) parts.push({ x: x - 160 - Math.random() * 120, y: y + (Math.random() - .5) * 120, vx: -60, vy: (Math.random() - .5) * 40, t: .9,
+    c: ['#fff6c0', '#ffd34d', '#ff9a2a', '#7fe0ff'][(Math.random() * 4) | 0], conf: 1, sz: 4 + Math.random() * 6 });
   ctx.save(); ctx.translate(x, y);
-  // quyruq lələkləri (rəngli)
-  ['#EF3340', '#ffb347', '#00B5E2', '#509E2F', '#ffd34d'].forEach((c, i) => { ctx.fillStyle = c; ctx.beginPath();
-    ctx.moveTo(-60, 0); ctx.quadraticCurveTo(-200, -40 + i * 22, -300 - i * 10, -60 + i * 35 + flap * 10); ctx.quadraticCurveTo(-200, 10 + i * 10, -60, 14); ctx.fill(); });
-  // qanadlar
-  for (const side of [-1, 1]) { ctx.fillStyle = side < 0 ? '#c97a1a' : '#e8962a'; ctx.beginPath(); ctx.moveTo(-30, -10);
-    ctx.quadraticCurveTo(0, -120 * side * flap - 40, 120, -200 * flap * side - (side < 0 ? 60 : 0)); ctx.quadraticCurveTo(60, -30, 40, 0); ctx.fill(); }
-  // gövdə + baş
-  const bg = ctx.createLinearGradient(0, -40, 0, 40); bg.addColorStop(0, '#ffcf5a'); bg.addColorStop(1, '#c97a1a');
-  ctx.fillStyle = bg; ctx.beginPath(); ctx.ellipse(0, 0, 110, 42, 0, 0, 7); ctx.fill();
-  ctx.beginPath(); ctx.ellipse(110, -30, 40, 30, 0, 0, 7); ctx.fill();
-  ctx.fillStyle = '#EF3340'; ctx.beginPath(); ctx.moveTo(100, -55); ctx.lineTo(120, -95); ctx.lineTo(130, -55); ctx.fill();   // kəkil
-  ctx.fillStyle = '#5a3d1e'; ctx.beginPath(); ctx.moveTo(145, -36); ctx.lineTo(185, -22); ctx.lineTo(145, -16); ctx.fill();   // dimdik
-  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(122, -36, 5, 0, 7); ctx.fill();
-  // ağızdan od
-  ctx.fillStyle = `rgba(255,150,30,${.6 + flap * .3})`; ctx.beginPath(); ctx.moveTo(180, -20); ctx.lineTo(260, 60 + flap * 20); ctx.lineTo(200, 90); ctx.fill();
+  // ---- quyruq: tovuz kimi uzun, ucunda "göz" ----
+  const tails = [['#EF3340', -70], ['#ff9a2a', -38], ['#ffd34d', -10], ['#3fbf4a', 18], ['#00B5E2', 46], ['#7a5cff', 74]];
+  tails.forEach(([c, off], i) => {
+    const wave = Math.sin(t * 5 + i * .8) * 22, ex = -330 - Math.abs(off) * .6, ey = off * 1.6 + wave;
+    const lg = ctx.createLinearGradient(-60, 0, ex, ey); lg.addColorStop(0, '#ffcf5a'); lg.addColorStop(.5, c); lg.addColorStop(1, c);
+    ctx.strokeStyle = lg; ctx.lineWidth = 12 - Math.abs(off) / 12; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-70, 6); ctx.bezierCurveTo(-160, off * .4 + wave * .3, -250, off * 1.2 - wave, ex, ey); ctx.stroke();
+    // lələk gözü
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(ex, ey, 22, 14, Math.atan2(ey, ex), 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffd34d'; ctx.beginPath(); ctx.ellipse(ex, ey, 12, 8, Math.atan2(ey, ex), 0, 7); ctx.fill();
+    ctx.fillStyle = '#1a2a6a'; ctx.beginPath(); ctx.arc(ex, ey, 5, 0, 7); ctx.fill();
+  });
+  ctx.lineCap = 'butt';
+  // ---- qanad: lələk-lələk ----
+  const wing = (side, dark) => {
+    const lift = -flap * side;   // side: -1 arxa qanad, 1 ön qanad
+    ctx.save(); ctx.translate(side < 0 ? 10 : -5, -20); ctx.rotate(lift * .6 + (side < 0 ? .35 : 0)); if (lift > 0) ctx.scale(1, 1 - lift * .5);
+    // qanad sümüyü çiyindən yuxarı-arxaya; lələklər onun boyunca sıralanır, uclara doğru uzanır
+    const AX = -150, AY = -175, N = 12;
+    for (let i = N - 1; i >= 0; i--) {
+      const k = i / (N - 1), px = AX * k, py = AY * k;           // sümük üzərində nöqtə
+      const a = -2.95 + k * .9, len = 80 + k * 140;            // ucda uzun, əsasda qısa
+      const fx = px + Math.cos(a) * len, fy = py + Math.sin(a) * len;
+      const lg = ctx.createLinearGradient(px, py, fx, fy);
+      lg.addColorStop(0, dark ? '#c9701e' : '#ffe08a'); lg.addColorStop(.55, dark ? '#d9561e' : '#ff9a2a'); lg.addColorStop(1, dark ? '#7a1a10' : '#EF3340');
+      ctx.fillStyle = lg; ctx.beginPath(); ctx.moveTo(px - 6, py + 4);
+      ctx.quadraticCurveTo(px + Math.cos(a - .18) * len * .55, py + Math.sin(a - .18) * len * .55, fx, fy);
+      ctx.quadraticCurveTo(px + Math.cos(a + .2) * len * .55, py + Math.sin(a + .2) * len * .55, px + 8, py - 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(120,40,10,.35)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + (fx - px) * .85, py + (fy - py) * .85); ctx.stroke();
+    }
+    // sümük xətti (qanadın ön kənarı)
+    ctx.strokeStyle = dark ? '#b8661a' : '#ffe9a8'; ctx.lineWidth = 14; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(AX * .2, AY * .7, AX, AY); ctx.stroke(); ctx.lineCap = 'butt';
+    // qanad örtüyü (yumşaq)
+    const cg = ctx.createRadialGradient(0, 0, 10, 0, 0, 120); cg.addColorStop(0, dark ? '#d98a2a' : '#fff1b0'); cg.addColorStop(1, dark ? 'rgba(200,110,30,0)' : 'rgba(255,200,90,0)');
+    ctx.fillStyle = cg; ctx.beginPath(); ctx.ellipse(-30, -60, 50, 80, -.5, 0, 7); ctx.fill();
+    ctx.restore();
+  };
+  wing(-1, true);
+  // ---- gövdə ----
+  const bg = ctx.createLinearGradient(0, -45, 0, 45); bg.addColorStop(0, '#fff1b0'); bg.addColorStop(.5, '#ffb347'); bg.addColorStop(1, '#c9601a');
+  ctx.fillStyle = bg; ctx.beginPath(); ctx.moveTo(-90, 10); ctx.bezierCurveTo(-60, -50, 60, -55, 110, -20); ctx.bezierCurveTo(90, 35, -20, 45, -90, 10); ctx.fill();
+  // sinə lələkləri (pulcuq)
+  ctx.strokeStyle = 'rgba(160,70,10,.45)'; ctx.lineWidth = 2;
+  for (let r = 0; r < 3; r++) for (let i = 0; i < 6; i++) { ctx.beginPath(); ctx.arc(-40 + i * 22 + r * 8, 4 + r * 10, 9, 0, Math.PI); ctx.stroke(); }
+  // ---- boyun + baş ----
+  ctx.fillStyle = '#ffc04a'; ctx.beginPath(); ctx.moveTo(80, -30); ctx.quadraticCurveTo(120, -70, 150, -66); ctx.lineTo(160, -40); ctx.quadraticCurveTo(120, -30, 100, 0); ctx.fill();
+  const hg = ctx.createRadialGradient(150, -62, 4, 155, -55, 34); hg.addColorStop(0, '#fff6d0'); hg.addColorStop(1, '#ff9a2a');
+  ctx.fillStyle = hg; ctx.beginPath(); ctx.ellipse(155, -56, 32, 25, -.2, 0, 7); ctx.fill();
+  // tac kəkil (3 uzun lələk, ucu parlaq)
+  [[-1.9, 70, '#EF3340'], [-1.55, 84, '#ffd34d'], [-1.2, 66, '#00B5E2']].forEach(([a, l, c]) => {
+    const w = Math.sin(t * 6 + a) * .08, ex = 145 + Math.cos(a + w) * l, ey = -74 + Math.sin(a + w) * l;
+    ctx.strokeStyle = c; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(145, -74); ctx.quadraticCurveTo(140, -100, ex, ey); ctx.stroke();
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(ex, ey, 9, 6, a, 0, 7); ctx.fill(); });
+  // göz (parlayan)
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(166, -62, 9, 7, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#1a6aff'; ctx.beginPath(); ctx.arc(168, -62, 5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(170, -64, 1.8, 0, 7); ctx.fill();
+  // dimdik (qızılı, əyri)
+  const bk = ctx.createLinearGradient(180, -60, 215, -40); bk.addColorStop(0, '#ffe08a'); bk.addColorStop(1, '#b8761a');
+  ctx.fillStyle = bk; ctx.beginPath(); ctx.moveTo(182, -64); ctx.quadraticCurveTo(212, -62, 218, -44); ctx.quadraticCurveTo(204, -50, 184, -46); ctx.fill();
+  // ağızdan od axını
+  const fl = .7 + Math.sin(now / 60) * .3;
+  gr = ctx.createLinearGradient(210, -44, 320, 60); gr.addColorStop(0, `rgba(255,255,200,${fl})`); gr.addColorStop(.3, `rgba(255,170,40,${fl})`); gr.addColorStop(1, 'rgba(255,60,0,0)');
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.moveTo(212, -46); ctx.quadraticCurveTo(290, -30, 340, 70 + flap * 15); ctx.quadraticCurveTo(260, 40, 206, -38); ctx.fill();
+  // ön qanad
+  wing(1, false);
   ctx.restore();
-  drawPic(pic, x, y, 36, '#ffd34d'); txt(simurq.user.slice(0, 12), x, y - 60, 26, '#fff');
+  // profil + ad (sinədə, qızılı halqa)
+  drawPic(pic, x + 10, y + 4, 34, '#ffd34d');
+  txt('🦅 ' + simurq.user.slice(0, 12), x + 10, y + 64, 28, '#ffd34d');
 }
 
 // ================= GECƏ-GÜNDÜZ + HAVA =================
@@ -837,6 +917,8 @@ function update(dt) {
     }
     updTanks(dt);
     rageBanner = Math.max(0, rageBanner - dt);
+    if (lives <= Math.max(5, CFG.castleLives * .15)) { dangerT -= dt; if (dangerT <= 0) { dangerT = 7;
+      announce('QALA DÜŞMƏK ÜZRƏDİR! 👑', '#ffd34d', { sub: 'Son zərbəni kim vuracaq?', bg: 'rgba(120,0,0,.75)', size: 50, life: 4 }); } }
   } else if (state === 'failed') { stateT += dt; if (stateT > 4) { const r = round; reset(); round = r; } }
   else updCaptured(dt);
 
@@ -1156,30 +1238,34 @@ function drawShots() {
 }
 function drawHud() {
   // can zolağı
-  const bx = 90, by = 70, bw = 900, bh = 56, k = lives / CFG.castleLives;
+  const bx = 150, by = 92, bw = 780, bh = 52, k = lives / CFG.castleLives;
   const danger = state === 'play' && k <= .15, blink = Math.sin(performance.now() / 110) > 0;
   ctx.fillStyle = danger && blink ? 'rgba(255,40,40,.9)' : 'rgba(0,0,0,.6)'; ctx.fillRect(bx - 6, by - 6, bw + 12, bh + 12);
   ctx.fillStyle = k > .5 ? '#3fbf4a' : k > .2 ? '#f0b429' : '#e53935'; ctx.fillRect(bx, by, bw * k, bh);
   if (regenOn && state === 'play') { ctx.fillStyle = `rgba(95,227,95,${.35 + Math.sin(performance.now() / 150) * .25})`; ctx.fillRect(bx, by, bw * k, bh); }
   txt(regenOn && state === 'play' ? `🔧 QALA BƏRPA OLUNUR  ${lives} / ${CFG.castleLives}` : `QALA CANI  ${lives} / ${CFG.castleLives}`, W / 2, by + bh / 2, 34, '#fff');
   // qala nömrəsi + ümumi uğur (sosial sübut, rekord)
-  txt(`🏰 ${round}-ci qala`, 20, 30, 28, '#fff', 'left');
-  txt(`Fəth: ${STATS.conquered}` + (STATS.best ? `  ·  Rekord ${fmtT(STATS.best)}` : ''), W - 20, 30, 24, '#fff', 'right');
+  txt(`🏰 ${round}-ci qala`, 20, 68, 30, '#fff', 'left');
+  txt(`Fəth: ${STATS.conquered}` + (STATS.best ? `  ·  Rekord ${fmtT(STATS.best)}` : ''), W - 20, 68, 26, '#fff', 'right');
   // daimi məqsəd yazısı (yayına sonradan girən də görsün)
-  const gp = 1 + Math.sin(performance.now() / 300) * .03;
-  ctx.save(); ctx.translate(W / 2, 30); ctx.scale(gp, gp);
-  azFlag(-180, -14, 44, 28); txt('🎯 QALANI AL!', 25, 2, 40, '#ffd34d'); ctx.restore();
+  // şüarlar hər 4 saniyədə dəyişir (hədiyyə istəmir — yalnız döyüş ruhu)
+  const SLOGANS = ['🎯 QALANI AL!', '⚔ DÖYÜŞƏ QOŞUL!', '🚩 BAYRAĞI QALDIR!', '🔥 İRƏLİ, ƏSGƏRLƏR!', '❤ LIKE = ƏSGƏR', '💬 ŞƏRH YAZ — ƏSGƏR OL!'];
+  const now = performance.now(), si = Math.floor(now / 4000) % SLOGANS.length, ph = (now % 4000) / 4000;
+  const fade = Math.min(1, ph * 8, (1 - ph) * 8), gp = (1 + Math.sin(now / 300) * .03) * (.85 + .15 * fade);
+  ctx.save(); ctx.translate(W / 2, 22); ctx.scale(gp, gp); ctx.globalAlpha = fade;
+  ctx.font = 'bold 50px Arial'; const sw = ctx.measureText(SLOGANS[si]).width;
+  azFlag(-sw / 2 - 74, -17, 54, 34); txt(SLOGANS[si], 0, 2, 50, '#ffd34d'); ctx.restore(); ctx.globalAlpha = 1;
   // bridge nişanı (kiçik nöqtə, saatın altında)
   const bs = { connected: ['#3fdc5a', 'TikTok'], test: ['#4aa3ff', 'TEST'], waiting: ['#f0b429', 'Gözləyir'], off: ['#e53935', 'Bridge yox'] }[bridgeState] || ['#888', ''];
-  ctx.fillStyle = bs[0]; ctx.beginPath(); ctx.arc(W - 290, 300, 9, 0, 7); ctx.fill();
-  txt(bs[1], W - 274, 300, 20, '#fff', 'left');
+  ctx.fillStyle = bs[0]; ctx.beginPath(); ctx.arc(W - 290, 340, 9, 0, 7); ctx.fill();
+  txt(bs[1], W - 274, 340, 22, '#fff', 'left');
   // taymer
   const tl = Math.max(0, Math.ceil(timeLeft)), urgent = tl <= 30;
   const ts = `⏱ ${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}`;
   const tp = urgent ? 1 + Math.abs(Math.sin(performance.now() / (tl < 10 ? 160 : 320))) * .25 : 1;
-  ctx.fillStyle = urgent ? 'rgba(150,0,0,.75)' : 'rgba(0,0,0,.5)'; ctx.fillRect(W - 300, 160, 280, 80);
-  ctx.save(); ctx.translate(W - 160, 200); ctx.scale(tp, tp); txt(ts, 0, 0, 48, urgent ? '#fff' : '#ffd34d'); ctx.restore();
-  if (state === 'play' && stage) txt(['', '🏹 Oxçular', '💣 Qala topu', '🛡 TANK'][stage], W - 160, 270, 28, '#ff7a1a');
+  ctx.fillStyle = urgent ? 'rgba(150,0,0,.75)' : 'rgba(0,0,0,.5)'; ctx.fillRect(W - 300, 200, 280, 80);
+  ctx.save(); ctx.translate(W - 160, 240); ctx.scale(tp, tp); txt(ts, 0, 0, 48, urgent ? '#fff' : '#ffd34d'); ctx.restore();
+  if (state === 'play' && stage) txt(['', '🏹 Oxçular', '💣 Qala topu', '🛡 TANK'][stage], W - 160, 308, 28, '#ff7a1a');
   // can zolağında səviyyə nişanları
   for (const [v, ic] of [[CFG.stageArchers, '🏹'], [CFG.stageCannons, '💣'], [CFG.stageTank, '🛡']]) {
     const mx = bx + bw * v / CFG.castleLives; ctx.fillStyle = '#fff'; ctx.fillRect(mx - 2, by - 6, 4, bh + 12);
@@ -1187,10 +1273,10 @@ function drawHud() {
   // top-5
   // top-5: qalaya ən çox zərbə vuranlar (💥), sonra öldürmə sayı
   const top = [...board.values()].sort((a, b) => b.dmg - a.dmg || b.kills - a.kills || b.coins - a.coins).slice(0, 5);
-  ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(20, 160, 360, 40 + top.length * 62);
-  txt('🏆 QƏHRƏMANLAR', 40, 185, 26, '#ffd34d', 'left'); txt('💥', 360, 185, 24, '#fff', 'right');
-  top.forEach((b, i) => { const y = 235 + i * 62; drawPic(b.pic, 60, y, 24, i === 0 ? '#ffd34d' : '#fff');
-    txt((i === 0 ? '👑 ' : '') + (b.atom ? '☢ ' : '') + b.name.slice(0, 10), 96, y, 24, '#fff', 'left'); txt(String(b.dmg), 360, y, 26, '#ffd34d', 'right'); });
+  ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(20, 200, 360, 40 + top.length * 58);
+  txt('🏆 QƏHRƏMANLAR', 40, 225, 28, '#ffd34d', 'left'); txt('💥', 360, 225, 24, '#fff', 'right');
+  top.forEach((b, i) => { const y = 272 + i * 58; drawPic(b.pic, 60, y, 24, i === 0 ? '#ffd34d' : '#fff');
+    txt((i === 0 ? '👑 ' : '') + (b.atom ? '☢ ' : '') + b.name.slice(0, 10), 96, y, 26, '#fff', 'left'); txt(String(b.dmg), 360, y, 26, '#ffd34d', 'right'); });
 }
 // İlk 5 saniyə: məqsəd ekranı (hər raundun əvvəlində)
 function drawIntro() {
@@ -1227,8 +1313,10 @@ function draw() {
   drawAtmos();
   for (const f of floaters) txt(f.txt, f.x, f.y, f.s, f.c);
   ctx.restore();
-  drawHud(); drawCombo(); drawCry(); drawJoins(frameDt); drawUpcoming(); drawAnnounce(frameDt); drawNuke();
+  ctx.save(); ctx.translate(0, HUD_Y); drawHud(); drawCombo(); drawCry(); drawUpcoming(); ctx.restore();   // HUD telefonun status barından aşağıda
+  drawAnnounce(frameDt); drawNuke();
   if (state === 'captured' && stateT > 4.5) {
+    ctx.save(); ctx.translate(0, -330);   // qələbə paneli yuxarıda — qalxan bayraq üstündə görünür
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 1030, W, 620);
     const s = 1 + Math.sin(stateT * 4) * .04;
     ctx.save(); ctx.translate(W / 2, 1110); ctx.scale(s, s); txt('İRƏVAN QALASI ALINDI!', 30, 0, 66, '#fff'); azFlag(-430, -22, 66, 42); ctx.restore();
@@ -1248,17 +1336,7 @@ function draw() {
         ctx.fillStyle = 'rgba(120,0,0,.85)'; ctx.fillRect(0, 1610, W, 50);
         txt(`⚔ Növbəti qala: ${lastWin.next} can — daha güclü!`, W / 2, 1636, 34, '#fff'); ctx.globalAlpha = 1; }
     }
-  }
-  if (state === 'play' && rageBanner > 0) {
-    const a = Math.min(1, rageBanner); ctx.globalAlpha = a;
-    ctx.fillStyle = 'rgba(160,0,0,.75)'; ctx.fillRect(0, 1060, W, 220);
-    txt(bannerMsg[0], W / 2, 1130, 68, '#fff');
-    txt(bannerMsg[1], W / 2, 1215, 40, '#ffd34d'); ctx.globalAlpha = 1;
-  }
-  // son canlarda: kim vuracaq?
-  if (state === 'play' && lives <= Math.max(5, CFG.castleLives * .15) && rageBanner <= 0) {
-    const p = 1 + Math.sin(performance.now() / 120) * .06;
-    ctx.save(); ctx.translate(W / 2, 1130); ctx.scale(p, p); txt('QALA DÜŞMƏK ÜZRƏDİR! 👑', 0, 0, 56, '#ffd34d'); txt('Son zərbəni kim vuracaq?', 0, 62, 38, '#fff'); ctx.restore();
+    ctx.restore();
   }
   if (state === 'failed') {
     ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(0, 0, W, H);
@@ -1270,6 +1348,7 @@ function draw() {
 }
 
 let last = null, frameDt = .016;
+const HUD_Y = 130;   // yuxarı paneli bu qədər aşağı sal (TikTok-un yuxarı hissəsi örtməsin)
 function loop(now) {
   requestAnimationFrame(loop);   // əvvəlcə növbəti kadrı sifariş et — bir kadrda xəta olsa da oyun donmasın
   if (last === null) last = now;
