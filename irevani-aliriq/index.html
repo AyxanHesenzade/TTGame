@@ -60,9 +60,6 @@ const TOWER_BREAKS = [[.45, -30, 70], [.7, CASTLE.w - 90, 150]].map(([th, tx, de
   edge: Array.from({ length: 7 }, (_, i) => [i * 20, depth * (.4 + srnd() * .6)]) }));
 
 // ================= SƏSLƏR (Web Audio, fayl yoxdur) =================
-const cryFile = { ok: false, audio: new Audio('sesler/allah.mp3') };
-cryFile.audio.addEventListener('canplaythrough', () => cryFile.ok = true, { once: true });
-cryFile.audio.load();
 const SFX = (() => {
   let ac = null, master = null, muted = false; const last = {};
   function init() { if (ac) { ac.resume(); return; }
@@ -99,14 +96,6 @@ const SFX = (() => {
     fanfare() { if (!ac || muted) return; const t = ac.currentTime;
       [[392, .2], [392, .2], [392, .2], [523, .6], [659, .3], [784, .9]].reduce((tt, [f, d]) => {
         tone('square', f, 0, .12, d, tt); tone('triangle', f / 2, 0, .15, d, tt); return tt + d * .9; }, t + .1); },
-    // "Allah Allah!" savaş nidası: sesler/allah.mp3 varsa onu çalır, yoxdursa brauzerin səsi ilə deyir
-    cry() { if (muted || !ok('cry', 3.5)) return;
-      if (cryFile.ok) { const a = cryFile.audio.cloneNode(); a.volume = .9; a.play().catch(() => {}); return; }
-      if (!window.speechSynthesis) return;
-      const u = new SpeechSynthesisUtterance('Allah! Allah! Allah!');
-      const v = speechSynthesis.getVoices().find(v => /^(tr|az)/i.test(v.lang));
-      if (v) u.voice = v; u.lang = v ? v.lang : 'tr-TR'; u.rate = 1.15; u.pitch = .6; u.volume = 1;
-      speechSynthesis.cancel(); speechSynthesis.speak(u); },
     toggle() { muted = !muted; return muted; },
   };
 })();
@@ -212,19 +201,13 @@ function onGift({ user, avatar, coins = 1, giftName = '' }) {
   if (coins >= 1000) { for (let i = 0; i < 5; i++) setTimeout(() => fire('rocket', user, pic), i * 350); }
   else if (coins >= 100) fire('rocket', user, pic);
   else if (coins >= 10) spawnCannon(user, pic);
-  else { SFX.hero(); let u; for (let i = 0; i < Math.min(coins, 5); i++) u = spawnUnit('az', user, pic); battleCry(u); }
+  else { SFX.hero(); for (let i = 0; i < Math.min(coins, 5); i++) spawnUnit('az', user, pic); }
   floaters.push({ x: W / 2, y: H - 420, txt: `${user} +${coins}`, t: 1.6, c: '#ffd34d', s: 46 });
-}
-let likeCount = 0;
-function battleCry(u) {
-  SFX.cry();
-  floaters.push({ x: u.x, y: u.y - 190, txt: 'ALLAH ALLAH!', t: 1.8, c: '#ffd34d', s: 40 });
 }
 // Like → profilsiz adi əsgər
 function onLike() {
   if (state !== 'play') return;
-  SFX.spawn(); const u = spawnUnit('az', null, null);
-  if (++likeCount % 8 === 0) battleCry(u);   // hər 8 like-da bir nida
+  SFX.spawn(); spawnUnit('az', null, null);
 }
 // Top: aşağıdan gəlir, 3 dəfə atır, gedir. Üstündə profil + ad.
 let cannons = [];
