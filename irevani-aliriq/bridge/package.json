@@ -1,0 +1,16 @@
+{
+  "name": "irevan-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TikTok LIVE hədiyyə/like hadisələrini İrəvanı Alırıq oyununa ötürür",
+  "main": "bridge.js",
+  "scripts": {
+    "start": "node bridge.js",
+    "test": "node bridge.js --test"
+  },
+  "dependencies": {
+    "tiktok-live-connector": "^2.5.0",
+    "ws": "^8.18.0"
+  }
+}

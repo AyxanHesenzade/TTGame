@@ -22,18 +22,43 @@
   <button data-c="10">3 · 💣 Top</button>
   <button data-c="100">4 · 🚀 Raket</button>
   <button data-c="29999">5 · 🦁 Şir</button>
+  <button data-g="Ice Cream Cone" data-c="1">6 · 🍦 Süvari</button>
+  <button data-g="Finger Heart" data-c="5">7 · 🫰 5 əsgər</button>
+  <button data-g="Perfume" data-c="20">8 · 💐 Taran</button>
+  <button data-g="Galaxy" data-c="1000">9 · 🌌 Ox yağışı</button>
   <button id="mute" onclick="this.textContent = SFX.toggle() ? '🔇 Səs' : '🔊 Səs'">🔊 Səs</button>
   <button id="obs">Gizlət</button>
 </div>
 <script>
 // ================= AYARLAR =================
 const CFG = {
-  castleLives: 50,         // qalanın canı
-  defenderEvery: 1.4,      // müdafiəçi spawn intervalı (san)
-  maxDefenders: 30,
+  castleLives: 50,         // qalanın canı (raundda yenidən hesablanır)
+  // ---- Raund artımı ----
+  baseLives: 50,           // 1-ci raund qalanın canı
+  livesPerRound: 25,       // hər raund +25 can (50 → 75 → 100 ...)
+  maxLivesCap: 250,
+  baseTankHp: 15, tankHpPerRound: 5,
+  stageFrac: [.8, .6, .4], // oxçu / qala topu / tank — canın hansı hissəsində
+  regenAfter: 12,          // bu qədər saniyə zərbə olmasa qala bərpa olunmağa başlayır
+  regenEvery: 2,           // hər 2 saniyə +1 can
+  defenderEvery: .6,       // müdafiəçi spawn intervalı (san)
+  defenderGroup: 2,        // hər dəfə neçə müdafiəçi çıxır
+  maxDefenders: 60,
   autoSoldierEvery: 2.5,   // pulsuz "adi" əsgər intervalı
   nukeCastleDmg: 10,
-  victoryPause: 9,         // qala alınandan sonra yeni raund (san)
+  victoryPause: 11,        // qala alınandan sonra yeni raund (san)
+  roundTime: 300,          // qalanı almaq üçün vaxt (san)
+  // Müdafiə səviyyələri (qala canına görə)
+  stageArchers: 40,        // ≤40 can → divarda oxçular
+  stageCannons: 30,        // ≤30 can → qala top atır
+  stageTank: 20,           // ≤20 can → tank çıxır
+  rageEvery: [2.2, .9],    // qala top intervalı: 30 candan → 0 cana doğru sürətlənir
+  rageBurst: 10,           // hər yeni səviyyədə dərhal çıxan əlavə qüvvə
+  tankHp: 15,              // tankın canı
+  tankRespawn: 25,         // tank məhv olsa neçə saniyədən sonra yenisi gəlir
+  rageSpawnMul: 1.6,       // hücum rejimində müdafiəçi daha tez çıxır
+  rageMaxDefenders: 85,
+  archerEvery: .35,        // divardakı oxçuların atış intervalı
 };
 const W = 1080, H = 1920;
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
@@ -93,6 +118,8 @@ const SFX = (() => {
       for (let i = 0; i < 4; i++) { o.frequency.setValueAtTime(500, t + i * .5); o.frequency.linearRampToValueAtTime(900, t + i * .5 + .45); }
       const g = env(o, .18, .05, 2); o.start(t); o.stop(t + 2.1); },
     nuke() { if (!ac || muted) return; tone('sine', 55, 18, 1, 3); filtNoise('lowpass', 400, 1, 3.2); filtNoise('lowpass', 2500, .5, .8); },
+    heart() { if (!ac || muted) return; const t = ac.currentTime; tone('sine', 70, 40, .7, .12, t); tone('sine', 60, 35, .5, .12, t + .18); },
+    fail() { if (!ac || muted) return; const t = ac.currentTime; [392, 349, 311, 262].forEach((f, i) => tone('sawtooth', f, 0, .1, .45, t + i * .4)); },
     fanfare() { if (!ac || muted) return; const t = ac.currentTime;
       [[392, .2], [392, .2], [392, .2], [523, .6], [659, .3], [784, .9]].reduce((tt, [f, d]) => {
         tone('square', f, 0, .12, d, tt); tone('triangle', f / 2, 0, .15, d, tt); return tt + d * .9; }, t + .1); },
@@ -102,14 +129,27 @@ const SFX = (() => {
 
 // ================= VƏZİYYƏT =================
 let units = [], shots = [], booms = [], parts = [], floaters = [], nukeQueue = [], nuke = null;
+let roundT = 0, idleT = 0, regenT = 0, regenOn = false, lastWin = null;
+// Ümumi statistika (yayım yenidən başlasa da qalsın)
+const STATS = (() => { try { return JSON.parse(localStorage.getItem('irevan_stats')) || { conquered: 0, best: 0 }; } catch (_) { return { conquered: 0, best: 0 }; } })();
+const saveStats = () => { try { localStorage.setItem('irevan_stats', JSON.stringify(STATS)); } catch (_) {} };
+const fmtT = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+let tanks = [], tankT = 0, stage = 0, bannerMsg = null;
+let archerT = 0, capHero = null, timeLeft = 0, rage = false, rageT = 0, rageBanner = 0, lastHitter = null, heartT = 0;
 let introT = 0, lives, state, stateT, flagY, azFlagY, shake = 0, defT = 0, autoT = 0, round = 1;
 const board = new Map();       // ad -> {name, pic, kills, coins, atom}
 const picCache = new Map();
 
 function reset() {
-  units = []; shots = []; cannons = []; booms = []; parts = []; floaters = [];
-  lives = CFG.castleLives; state = 'play'; stateT = 0;
+  units = []; shots = []; cannons = []; rams = []; booms = []; parts = []; floaters = [];
+  // raunda görə qala güclənir
+  CFG.castleLives = Math.min(CFG.maxLivesCap, CFG.baseLives + (round - 1) * CFG.livesPerRound);
+  [CFG.stageArchers, CFG.stageCannons, CFG.stageTank] = CFG.stageFrac.map(f => Math.round(CFG.castleLives * f));
+  CFG.tankHp = CFG.baseTankHp + (round - 1) * CFG.tankHpPerRound;
+  lives = CFG.castleLives; state = 'play'; stateT = 0; roundT = 0; idleT = 0; regenT = 0; regenOn = false;
   flagY = 0; azFlagY = 1; introT = 0;
+  tanks = []; tankT = 0; stage = 0; bannerMsg = null; decal.clearRect(0, 0, W, H);
+  timeLeft = CFG.roundTime; rage = false; rageT = 0; rageBanner = 0; lastHitter = null;
   board.clear();
 }
 
@@ -125,7 +165,8 @@ function getPic(name, url) {
   g.fillStyle = '#fff'; g.font = 'bold 70px Arial'; g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(name[0].toUpperCase(), 64, 68);
   picCache.set(key, c);
-  if (url) { const im = new Image(); im.crossOrigin = 'anonymous';
+  // crossOrigin qoymuruq: TikTok CDN CORS başlığı vermir; biz piksel oxumuruq, sadəcə çəkirik
+  if (url) { const im = new Image(); im.referrerPolicy = 'no-referrer';
     im.onload = () => { g.clearRect(0,0,128,128); g.drawImage(im, 0, 0, 128, 128); }; im.src = url; }
   return c;
 }
@@ -166,9 +207,9 @@ function enemyFlag(x, y, w, h) {
 // side: 'az' (hücum, aşağıdan yuxarı) | 'en' (müdafiə, qaladan aşağı)
 function spawnUnit(side, name, pic) {
   const u = {
-    side, name, pic, hp: side === 'az' ? (pic ? 3 : 2) : 2,
+    side, name, pic, hp: side === 'az' ? (pic ? 6 : 2) : 2,   // gül əsgəri 6 can, like əsgəri 2
     x: side === 'az' ? 120 + Math.random() * 840 : CASTLE.x + CASTLE.w / 2 + (Math.random() - .5) * 160,
-    y: side === 'az' ? H - 330 : GATE_Y - 10,
+    y: side === 'az' ? H - 120 : GATE_Y - 10,
     spd: side === 'az' ? 70 + Math.random() * 25 : 60 + Math.random() * 20,
     cd: 0, swing: 0, walk: Math.random() * 6, dead: false,
   };
@@ -182,27 +223,101 @@ function killUnit(u, by) {
 function hitCastle(n, by) {
   if (state !== 'play') return;
   lives = Math.max(0, lives - n); shake = Math.max(shake, 8 + n); SFX.castle();
+  lastHitter = by || null;   // son zərbəni vuran (like əsgəri üçün null)
+  idleT = 0; if (regenOn) { regenOn = false; }
+  if (by && board.has(by)) board.get(by).dmg += n;   // töhfə: qalaya vurulan zərər
   // daş qırıntıları tökülür
   for (let i = 0; i < 4 + n * 3; i++) parts.push({ x: CASTLE.x + 40 + Math.random() * (CASTLE.w - 80), y: CASTLE.y + 60 + Math.random() * 250,
     vx: (Math.random() - .5) * 260, vy: -100 - Math.random() * 250, t: 1.4, c: ['#a8875a', '#7d6440', '#c9a26b'][(Math.random() * 3) | 0], sz: 8 + Math.random() * 14 });
-  floaters.push({ x: W / 2 + (Math.random() - .5) * 300, y: CASTLE.y + 80, txt: '-' + n, t: 1.2, c: '#ff4040', s: 64 });
-  if (lives === 0) capture();
+  floaters.push({ x: W / 2 + (Math.random() - .5) * 300, y: CASTLE.y + 80, txt: (by && n >= 2 ? by.slice(0, 10) + ' ' : '') + '-' + n, t: 1.2, c: '#ff4040', s: n >= 2 ? 52 : 64 });
+  if (lives === 0) { capture(); return; }
+  checkStage();
+}
+const STAGES = [
+  null,
+  ['🏹 OXÇULAR DİVARDA!', 'Qala müdafiəyə keçdi'],
+  ['💣 QALA TOP ATIR!', 'Qüllələrdən od mərmiləri'],
+  ['🛡 TANK GƏLİR!', 'Qala son gücünü toplayır'],
+];
+function checkStage() {
+  if (lives <= 0) return;
+  const s = lives <= CFG.stageTank ? 3 : lives <= CFG.stageCannons ? 2 : lives <= CFG.stageArchers ? 1 : 0;
+  while (stage < s) {
+    stage++; rage = true; rageBanner = 3.5; bannerMsg = STAGES[stage]; SFX.siren();
+    for (let i = 0; i < CFG.rageBurst; i++) setTimeout(() => state === 'play' && spawnUnit('en', null, null), i * 120);
+    if (stage === 3) spawnTank();
+  }
 }
 
 // ================= HƏDİYYƏ =================
 function addBoard(name, pic, coins) {
-  if (!board.has(name)) board.set(name, { name, pic, kills: 0, coins: 0, atom: false });
+  if (!board.has(name)) board.set(name, { name, pic, kills: 0, coins: 0, dmg: 0, atom: false });
   const b = board.get(name); b.coins += coins; return b;
 }
-function onGift({ user, avatar, coins = 1, giftName = '' }) {
+// combo: bridge "count" göndərir (məs. 10 gül) — hər birini ayrıca, kiçik fasilə ilə işləyirik
+function onGift(e) {
+  const n = Math.max(1, Math.min(30, e.count | 0 || 1));
+  for (let i = 0; i < n; i++) setTimeout(() => onGiftOne({ ...e, count: 1 }), i * 180);
+}
+function onGiftOne({ user, avatar, coins = 1, giftName = '' }) {
   if (state !== 'play') return;
   const pic = getPic(user, avatar); addBoard(user, pic, coins);
+  floaters.push({ x: W / 2, y: H - 260, txt: `${user} +${coins}`, t: 1.6, c: '#ffd34d', s: 46 });
   if (/lion|şir/i.test(giftName) || coins >= 20000) { nukeQueue.push({ user, pic }); return; }
+  // Xüsusi hədiyyələr (ada görə). Siyahıda olmayan hədiyyə coin cədvəli ilə işləyir.
+  if (/ice ?cream|dondurma|doughnut|donut/i.test(giftName)) { spawnCavalry(user, pic); return; }
+  if (/finger ?heart|barmaq/i.test(giftName)) { SFX.hero(); for (let i = 0; i < 5; i++) setTimeout(() => spawnUnit('az', user, pic), i * 150); return; }
+  if (/perfume|ətir/i.test(giftName)) { spawnRam(user, pic); return; }
+  if (/galaxy|qalaktika/i.test(giftName)) { arrowRain(user, pic); return; }
   if (coins >= 1000) { for (let i = 0; i < 5; i++) setTimeout(() => fire('rocket', user, pic), i * 350); }
   else if (coins >= 100) fire('rocket', user, pic);
   else if (coins >= 10) spawnCannon(user, pic);
   else { SFX.hero(); for (let i = 0; i < Math.min(coins, 5); i++) spawnUnit('az', user, pic); }
-  floaters.push({ x: W / 2, y: H - 420, txt: `${user} +${coins}`, t: 1.6, c: '#ffd34d', s: 46 });
+}
+// ---- Süvari: sürətli, güclü ----
+function spawnCavalry(user, pic) {
+  SFX.hero(); const u = spawnUnit('az', user, pic); u.cav = true; u.spd = 210; u.hp = 8;
+}
+// ---- Taran: darvazaya gedir, 4 dəfə vurur (hər zərbə −2 can) ----
+let rams = [];
+function spawnRam(user, pic) {
+  SFX.hero(); rams.push({ user, pic, x: CASTLE.x + CASTLE.w / 2 + (Math.random() - .5) * 60, y: H - 100, hits: 4, cd: 0, swing: 0, walk: 0, out: false });
+}
+function updRams(dt) {
+  for (const r of rams) {
+    r.swing = Math.max(0, r.swing - dt * 2.5);
+    if (r.out) { r.y += 200 * dt; continue; }
+    if (r.y > GATE_Y + 70) { r.y -= 110 * dt; r.walk += dt * 10; }
+    else { r.cd -= dt; if (r.cd <= 0 && state === 'play') { r.cd = 1.1; r.swing = 1;
+      setTimeout(() => { hitCastle(2, r.user); shake = Math.max(shake, 14); }, 250);
+      if (--r.hits <= 0) setTimeout(() => r.out = true, 900); } }
+  }
+  rams = rams.filter(r => r.y < H + 150);
+}
+function drawRam(r) {
+  const s = r.swing > 0 ? Math.sin((1 - r.swing) * Math.PI) : 0, push = -s * 40;
+  ctx.save(); ctx.translate(r.x, r.y);
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(0, 40, 80, 16, 0, 0, 7); ctx.fill();
+  // çərçivə + dam
+  ctx.fillStyle = '#5a3d1e'; ctx.fillRect(-60, -70, 10, 110); ctx.fillRect(50, -70, 10, 110);
+  ctx.fillStyle = '#7a5530'; ctx.beginPath(); ctx.moveTo(-75, -60); ctx.lineTo(0, -120); ctx.lineTo(75, -60); ctx.fill();
+  // asılı kündə (taran) — irəli-geri yellənir
+  ctx.strokeStyle = '#2a1c0e'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-30, -90); ctx.lineTo(-20, -30 + push); ctx.moveTo(30, -90); ctx.lineTo(20, -30 + push); ctx.stroke();
+  ctx.fillStyle = '#6b4a24'; ctx.fillRect(-16, -110 + push, 32, 120);
+  ctx.fillStyle = '#555'; ctx.beginPath(); ctx.moveTo(-18, -110 + push); ctx.lineTo(0, -140 + push); ctx.lineTo(18, -110 + push); ctx.fill();
+  // təkərlər
+  for (const wx of [-50, 50]) { ctx.save(); ctx.translate(wx, 36); ctx.rotate(r.walk / 3); ctx.fillStyle = '#3a2610'; ctx.beginPath(); ctx.arc(0, 0, 18, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#a0763c'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(14, 0); ctx.moveTo(0, -14); ctx.lineTo(0, 14); ctx.stroke(); ctx.restore(); }
+  ctx.restore();
+  drawPic(r.pic, r.x, r.y + 90, 30, '#ffd34d'); txt(r.user.slice(0, 12), r.x, r.y + 138, 22, '#fff');
+}
+// ---- Ox yağışı: göydən 30 ox müdafiəçilərin üstünə ----
+function arrowRain(user, pic) {
+  floaters.push({ x: W / 2, y: 1100, txt: `🏹 ${user}: OX YAĞIŞI!`, t: 2.2, c: '#9fe3ff', s: 56 });
+  for (let i = 0; i < 30; i++) setTimeout(() => {
+    const t = pickTarget(); const tx = t.castle ? 100 + Math.random() * (W - 200) : t.x, ty = t.castle ? GATE_Y + 60 + Math.random() * 600 : t.y;
+    shots.push({ kind: 'rarrow', x: tx + 120, y: -60, tx, ty: ty - 30, t: 0, dur: .8, user });
+  }, i * 70);
 }
 // Like → profilsiz adi əsgər
 function onLike() {
@@ -212,32 +327,57 @@ function onLike() {
 // Top: aşağıdan gəlir, 3 dəfə atır, gedir. Üstündə profil + ad.
 let cannons = [];
 function spawnCannon(user, pic) {
-  cannons.push({ user, pic, x: 160 + Math.random() * 760, y: H + 60, stopY: H - 420 - Math.random() * 120,
-    ammo: 3, cd: .6, phase: 'in', recoil: 0 });
+  cannons.push({ user, pic, x: 160 + Math.random() * 760, y: H + 60, stopY: H - 300 - Math.random() * 120,
+    ammo: 3, cd: 1.1, phase: 'in', recoil: 0, aim: -Math.PI / 2, aimTo: -Math.PI / 2, tgt: null, roll: 0, flash: 0 });
 }
+const angLerp = (a, b, k) => { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * k; };
 function updCannons(dt) {
   for (const c of cannons) {
-    c.recoil = Math.max(0, c.recoil - dt * 5);
-    if (c.phase === 'in') { c.y -= 220 * dt; if (c.y <= c.stopY) { c.y = c.stopY; c.phase = 'fire'; } }
+    c.recoil = Math.max(0, c.recoil - dt * 4); c.flash = Math.max(0, c.flash - dt * 6);
+    if (c.phase === 'in') { c.y -= 220 * dt; c.roll -= 220 * dt / 26; if (c.y <= c.stopY) { c.y = c.stopY; c.phase = 'fire'; } }
     else if (c.phase === 'fire') {
+      if (!c.tgt || c.tgt.dead) c.tgt = pickTarget();
+      // lülə hədəfə tərəf yavaş-yavaş dönür (qövslə atmaq üçün bir az yuxarı)
+      c.aimTo = Math.atan2(c.tgt.y - c.y, c.tgt.x - c.x) - .25;
+      c.aimTo = Math.max(-Math.PI + .35, Math.min(-.35, c.aimTo));
+      c.aim = angLerp(c.aim, c.aimTo, Math.min(1, dt * 4));
       c.cd -= dt;
-      if (c.cd <= 0) { c.cd = .9; c.recoil = 1; shake = Math.max(shake, 5); SFX.cannon();
-        const t = pickTarget();
-        shots.push({ kind: 'cball', x: c.x, y: c.y - 70, tx: t.x, ty: t.y, t: 0, dur: .9, user: c.user, pic: c.pic });
+      if (c.cd <= 0) { c.cd = .9; c.recoil = 1; c.flash = 1; shake = Math.max(shake, 5); SFX.cannon();
+        const mx = c.x + Math.cos(c.aim) * 95, my = c.y - 40 + Math.sin(c.aim) * 95;
+        for (let i = 0; i < 10; i++) parts.push({ x: mx, y: my, vx: Math.cos(c.aim) * 120 + (Math.random() - .5) * 120, vy: Math.sin(c.aim) * 120 + (Math.random() - .5) * 120, t: .7, c: 'rgba(200,200,200,.6)', conf: 1, sz: 14 + Math.random() * 12 });
+        shots.push({ kind: 'cball', x: mx, y: my, tx: c.tgt.x, ty: c.tgt.y, t: 0, dur: .9, user: c.user, pic: c.pic });
+        c.tgt = null;
         if (--c.ammo <= 0) c.phase = 'out'; }
-    } else { c.y += 260 * dt; }
+    } else { c.y += 260 * dt; c.roll += 260 * dt / 26; }
   }
   cannons = cannons.filter(c => c.y < H + 100);
 }
 function drawCannon(c) {
-  const r = c.recoil * 14;
-  ctx.save(); ctx.translate(c.x, c.y + r);
-  ctx.fillStyle = '#3b2a17'; ctx.save(); ctx.rotate(-.35); ctx.fillRect(-18, -110, 36, 100); ctx.fillStyle = '#222'; ctx.fillRect(-22, -116, 44, 14); ctx.restore();
-  ctx.fillStyle = '#6b4a24'; ctx.fillRect(-55, -30, 110, 30);
-  for (const wx of [-38, 38]) { ctx.fillStyle = '#2a1c0e'; ctx.beginPath(); ctx.arc(wx, 0, 26, 0, 7); ctx.fill();
-    ctx.fillStyle = '#a0763c'; ctx.beginPath(); ctx.arc(wx, 0, 8, 0, 7); ctx.fill(); }
+  const rc = c.recoil * 16;
+  ctx.save(); ctx.translate(c.x, c.y);
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(0, 26, 70, 14, 0, 0, 7); ctx.fill();
+  // lafet (taxta gövdə)
+  ctx.fillStyle = '#6b4a24'; ctx.beginPath(); ctx.moveTo(-60, -10); ctx.lineTo(40, -48); ctx.lineTo(55, -30); ctx.lineTo(-50, 10); ctx.fill();
+  ctx.strokeStyle = '#4a3218'; ctx.lineWidth = 3; ctx.stroke();
+  // lülə — hədəfə dönür, atəşdə geri təpir
+  ctx.save(); ctx.translate(0, -40); ctx.rotate(c.aim); ctx.translate(-rc, 0);
+  const lg = ctx.createLinearGradient(0, -16, 0, 16); lg.addColorStop(0, '#5a5f66'); lg.addColorStop(.4, '#2b2e33'); lg.addColorStop(1, '#15171a');
+  ctx.fillStyle = lg; ctx.beginPath(); ctx.moveTo(-28, -18); ctx.lineTo(88, -11); ctx.lineTo(88, 11); ctx.lineTo(-28, 18); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#c9a23a'; ctx.fillRect(10, -15, 6, 30); ctx.fillRect(60, -12, 5, 24);
+  ctx.fillStyle = '#15171a'; ctx.fillRect(86, -14, 10, 28);
+  ctx.beginPath(); ctx.arc(-28, 0, 12, 0, 7); ctx.fill();
+  if (c.flash > 0) { ctx.fillStyle = `rgba(255,200,60,${c.flash})`; ctx.beginPath(); ctx.moveTo(96, -14); ctx.lineTo(96 + 70 * c.flash, 0); ctx.lineTo(96, 14); ctx.fill();
+    ctx.fillStyle = `rgba(255,255,220,${c.flash})`; ctx.beginPath(); ctx.arc(100, 0, 14 * c.flash, 0, 7); ctx.fill(); }
   ctx.restore();
-  drawPic(c.pic, c.x, c.y - 150 + r, 36, '#ffd34d'); txt(c.user.slice(0, 12), c.x, c.y - 205 + r, 26, '#fff');
+  // təkərlər (fırlanan millərlə)
+  for (const wx of [-30, 30]) { ctx.save(); ctx.translate(wx, 0); ctx.rotate(c.roll);
+    ctx.fillStyle = '#3a2610'; ctx.beginPath(); ctx.arc(0, 0, 28, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#a0763c'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, 23, 0, 7); ctx.stroke();
+    for (let i = 0; i < 6; i++) { ctx.rotate(Math.PI / 3); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 22); ctx.stroke(); }
+    ctx.fillStyle = '#c9a23a'; ctx.beginPath(); ctx.arc(0, 0, 6, 0, 7); ctx.fill(); ctx.restore(); }
+  ctx.restore();
+  const r = 0;
+  drawPic(c.pic, c.x, c.y + 72 + r, 32, '#ffd34d'); txt(c.user.slice(0, 12), c.x, c.y + 124 + r, 24, '#fff');
 }
 function pickTarget() {
   const d = units.filter(u => u.side === 'en' && !u.dead);
@@ -250,8 +390,9 @@ function fire(kind, user, pic) {
   shots.push({ kind, x: t.x + (Math.random() - .5) * 200, y: -100, tx: t.x, ty: t.y, t: 0, dur: kind === 'rocket' ? 1.8 : 0.9, user, pic });
 }
 function explode(x, y, r, user, castleDmg) {
-  booms.push({ x, y, r, t: 0 }); shake = Math.max(shake, r / 10); SFX.boom(r > 200);
+  booms.push({ x, y, r, t: 0 }); shake = Math.max(shake, r / 10); SFX.boom(r > 200); addCrater(x, y, r);
   for (const u of units) if (u.side === 'en' && !u.dead && Math.hypot(u.x - x, u.y - y) < r) killUnit(u, user);
+  for (const t of tanks) if (Math.hypot(t.x - x, t.y - y) < r + 80) damageTank(t, r > 200 ? 5 : 2);
   if (y < GATE_Y + 60) hitCastle(castleDmg, user);
 }
 
@@ -264,6 +405,7 @@ function updNuke(dt) {
   else if (nuke.phase === 'fall' && nuke.t > 2) {
     nuke.phase = 'blast'; nuke.t = 0; shake = 40; SFX.nuke();
     for (const u of units) if (u.side === 'en') killUnit(u, nuke.user);
+    for (const t of tanks) damageTank(t, 999);
     const b = board.get(nuke.user); if (b) { b.atom = true; b.kills += 0; }
     hitCastle(CFG.nukeCastleDmg, nuke.user);
   } else if (nuke.phase === 'blast' && nuke.t > 3.5) nuke = null;
@@ -299,7 +441,105 @@ function drawNuke() {
 }
 
 // ================= QALA ALINDI =================
-function capture() { state = 'captured'; stateT = 0; setTimeout(SFX.fanfare, 2000); for (const u of units) if (u.side === 'en') killUnit(u); nukeQueue = []; }
+// Qala cavab atəşi: qüllədən bizim əsgərlərə (və ya toplara) mərmi
+function castleFire() {
+  const t = [...units.filter(u => u.side === 'az' && !u.dead), ...cannons.filter(c => c.phase === 'fire')];
+  if (!t.length) return;
+  const v = t[(Math.random() * t.length) | 0], fromL = Math.random() < .5;
+  SFX.cannon();
+  shots.push({ kind: 'eball', x: fromL ? CASTLE.x + 30 : CASTLE.x + CASTLE.w - 30, y: CASTLE.y + 40,
+    tx: v.x, ty: v.y - 20, t: 0, dur: 1.1 });
+}
+// ================= TANK =================
+function spawnTank() {
+  tanks.push({ x: CASTLE.x + CASTLE.w / 2, y: GATE_Y, stopY: GATE_Y + 260, hp: CFG.tankHp, dir: 1, cd: 1.5,
+    aim: Math.PI / 2, aimTo: Math.PI / 2, recoil: 0, hit: 0, tread: 0, flash: 0, smokeT: 0 });
+  SFX.cannon();
+}
+function damageTank(t, n) { t.hp -= n; t.hit = .15;
+  if (t.hp <= 0 && !t.dead) { t.dead = true; booms.push({ x: t.x, y: t.y, r: 220, t: 0 }); SFX.boom(true); shake = 25;
+    floaters.push({ x: t.x, y: t.y - 120, txt: 'TANK MƏHV EDİLDİ! 💥', t: 2, c: '#ffd34d', s: 52 }); } }
+function updTanks(dt) {
+  for (const t of tanks) {
+    t.recoil = Math.max(0, t.recoil - dt * 3); t.hit = Math.max(0, t.hit - dt); t.flash = Math.max(0, t.flash - dt * 6);
+    if (t.y < t.stopY) { t.y += 60 * dt; t.tread += 60 * dt; }
+    else { t.x += t.dir * 45 * dt; t.tread += 45 * dt * t.dir; if (t.x > W - 160 || t.x < 160) t.dir *= -1; }
+    // egzoz tüstüsü; zədəlidirsə qara tüstü + od
+    t.smokeT -= dt; if (t.smokeT <= 0) { t.smokeT = t.hp < CFG.tankHp / 2 ? .06 : .18;
+      parts.push({ x: t.x - t.dir * 110, y: t.y - 20, vx: -t.dir * 30, vy: -50, t: .9, c: 'rgba(90,90,90,.45)', conf: 1, sz: 12 + Math.random() * 10 });
+      if (t.hp < CFG.tankHp / 2) parts.push({ x: t.x + (Math.random() - .5) * 80, y: t.y - 60, vx: (Math.random() - .5) * 20, vy: -80, t: 1, c: Math.random() < .3 ? '#ff7a1a' : 'rgba(30,30,30,.6)', conf: 1, sz: 14 + Math.random() * 14 }); }
+    const foes = units.filter(u => u.side === 'az' && !u.dead);
+    let v = null, d = 1e9; for (const u of foes) { const dd = Math.hypot(u.x - t.x, u.y - t.y); if (dd < d) { d = dd; v = u; } }
+    if (v) t.aimTo = Math.atan2(v.y - 30 - (t.y - 62), v.x - t.x);
+    t.aim = angLerp(t.aim, t.aimTo, Math.min(1, dt * 2.5));   // qüllə yavaş dönür
+    let off = t.aimTo - t.aim; while (off > Math.PI) off -= 2 * Math.PI; while (off < -Math.PI) off += 2 * Math.PI;
+    t.cd -= dt;
+    if (v && t.cd <= 0 && Math.abs(off) < .15 && state === 'play') { t.cd = 1.6; t.recoil = 1; t.flash = 1; SFX.cannon(); shake = Math.max(shake, 6);
+      const mx = t.x + Math.cos(t.aim) * 120, my = t.y - 62 + Math.sin(t.aim) * 120;
+      for (let i = 0; i < 8; i++) parts.push({ x: mx, y: my, vx: Math.cos(t.aim) * 150 + (Math.random() - .5) * 100, vy: Math.sin(t.aim) * 150 + (Math.random() - .5) * 100, t: .6, c: 'rgba(210,210,210,.6)', conf: 1, sz: 14 + Math.random() * 10 });
+      shots.push({ kind: 'tshell', x: mx, y: my, tx: v.x, ty: v.y - 20, t: 0, dur: .35 }); }
+    // yaxındakı əsgərlər tankı qılıncla vurur
+    for (const u of foes) if (Math.hypot(u.x - t.x, u.y - t.y) < 95 && u.cd <= 0) { u.cd = .8; u.swing = 1; SFX.sword(); damageTank(t, .5); }
+  }
+  tanks = tanks.filter(t => !t.dead);
+}
+function drawTank(t) {
+  const W1 = t.hit ? '#fff' : null, col = (c) => W1 || c;
+  ctx.save(); ctx.translate(t.x, t.y);
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.ellipse(0, 34, 135, 24, 0, 0, 7); ctx.fill();
+  // tırtıl (hərəkət edən zolaqlar)
+  ctx.fillStyle = col('#1d1f1c'); ctx.beginPath(); ctx.roundRect(-130, -8, 260, 46, 23); ctx.fill();
+  ctx.save(); ctx.beginPath(); ctx.roundRect(-130, -8, 260, 46, 23); ctx.clip();
+  ctx.fillStyle = '#3a3d38'; const off = ((t.tread % 18) + 18) % 18;
+  for (let i = -150; i < 150; i += 18) { ctx.fillRect(i + off, -8, 8, 6); ctx.fillRect(i - off + 9, 32, 8, 6); }
+  ctx.restore();
+  for (let i = -100; i <= 100; i += 40) { ctx.fillStyle = '#4b4f47'; ctx.beginPath(); ctx.arc(i, 15, 15, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(i, 15); ctx.rotate(t.tread / 15); ctx.fillStyle = '#2a2c28'; ctx.fillRect(-2, -12, 4, 24); ctx.fillRect(-12, -2, 24, 4); ctx.restore(); }
+  // gövdə (maili ön, kamuflyaj)
+  const hg = ctx.createLinearGradient(0, -50, 0, -5); hg.addColorStop(0, col('#5d6650')); hg.addColorStop(1, col('#3b4233'));
+  ctx.fillStyle = hg; ctx.beginPath(); ctx.moveTo(-125, -8); ctx.lineTo(-110, -46); ctx.lineTo(100, -46); ctx.lineTo(135, -14); ctx.lineTo(125, -8); ctx.fill();
+  if (!W1) { ctx.fillStyle = 'rgba(40,46,32,.6)'; for (const [cx, cy, rx] of [[-70, -28, 22], [10, -34, 18], [70, -24, 20]]) { ctx.beginPath(); ctx.ellipse(cx, cy, rx, 8, .3, 0, 7); ctx.fill(); } }
+  ctx.fillStyle = col('#2b3025'); ctx.fillRect(-110, -50, 210, 6);
+  // qüllə + lülə (hədəfə dönür)
+  ctx.save(); ctx.translate(0, -62);
+  ctx.save(); ctx.rotate(t.aim); ctx.translate(-t.recoil * 22, 0);
+  ctx.fillStyle = col('#2f3529'); ctx.fillRect(20, -8, 105, 16); ctx.fillStyle = col('#1d211a'); ctx.fillRect(112, -11, 18, 22); ctx.fillRect(55, -10, 12, 20);
+  if (t.flash > 0) { ctx.fillStyle = `rgba(255,210,80,${t.flash})`; ctx.beginPath(); ctx.moveTo(130, -14); ctx.lineTo(130 + 80 * t.flash, 0); ctx.lineTo(130, 14); ctx.fill(); }
+  ctx.restore();
+  const tg = ctx.createRadialGradient(-10, -14, 5, 0, 0, 50); tg.addColorStop(0, col('#6e7860')); tg.addColorStop(1, col('#353c2d'));
+  ctx.fillStyle = tg; ctx.beginPath(); ctx.ellipse(0, 0, 52, 30, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = col('#2b3025'); ctx.beginPath(); ctx.ellipse(-12, -18, 16, 8, 0, 0, 7); ctx.fill();   // lyuk
+  ctx.restore();
+  // bayraq antenada
+  ctx.fillStyle = '#222'; ctx.fillRect(-42, -150, 3, 84); enemyFlag(-39, -150 + Math.sin(performance.now() / 160) * 2, 52, 32);
+  ctx.restore();
+  const k = Math.max(0, t.hp / CFG.tankHp);
+  ctx.fillStyle = '#000'; ctx.fillRect(t.x - 80, t.y - 175, 160, 16);
+  ctx.fillStyle = k > .5 ? '#e53935' : '#ff9800'; ctx.fillRect(t.x - 78, t.y - 173, 156 * k, 12);
+  txt('TANK', t.x, t.y - 195, 24, '#fff');
+}
+// Divar oxçuları
+const ARCHERS = [140, 260, 380, 500, 620];   // qala daxilində x mövqeləri
+function archerShoot() {
+  const t = units.filter(u => u.side === 'az' && !u.dead); if (!t.length) return;
+  const v = t[(Math.random() * t.length) | 0], ax = CASTLE.x + ARCHERS[(Math.random() * ARCHERS.length) | 0];
+  shots.push({ kind: 'earrow', x: ax, y: CASTLE.y + 40, tx: v.x, ty: v.y - 40, t: 0, dur: .7, tgt: v });
+}
+function drawArchers() {
+  if (!rage || state !== 'play') return;
+  for (const ax of ARCHERS) { const x = CASTLE.x + ax, y = CASTLE.y + 48;
+    ctx.fillStyle = '#4a4a4a'; ctx.fillRect(x - 10, y - 30, 20, 26);
+    ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(x, y - 40, 11, 0, 7); ctx.fill();
+    ctx.fillStyle = '#333'; ctx.fillRect(x - 12, y - 52, 24, 8);
+    ctx.strokeStyle = '#6b4a24'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x + 14, y - 22, 18, -1.3, 1.3); ctx.stroke(); }
+}
+function capture() { state = 'captured'; stateT = 0;
+  const rec = !STATS.best || roundT < STATS.best;
+  STATS.conquered++; if (rec) STATS.best = roundT; saveStats();
+  lastWin = { time: roundT, record: rec, next: Math.min(CFG.maxLivesCap, CFG.baseLives + round * CFG.livesPerRound) };
+  const b = lastHitter && board.get(lastHitter);
+  for (const t of tanks) damageTank(t, 999);
+  capHero = b ? { name: b.name, pic: b.pic } : { name: 'Like Ordusu', pic: getPic('❤') }; setTimeout(SFX.fanfare, 2000); for (const u of units) if (u.side === 'en') killUnit(u); nukeQueue = []; }
 function updCaptured(dt) {
   stateT += dt;
   flagY = Math.min(1, stateT / 2);                                   // düşmən bayrağı enir
@@ -316,9 +556,31 @@ function update(dt) {
   if (state === 'play') {
     defT += dt; autoT += dt;
     const nd = units.filter(u => u.side === 'en' && !u.dead).length;
-    if (defT > CFG.defenderEvery && nd < CFG.maxDefenders) { defT = 0; spawnUnit('en', null, null); }
+    if (defT > CFG.defenderEvery / (rage ? CFG.rageSpawnMul : 1) && nd < (rage ? CFG.rageMaxDefenders : CFG.maxDefenders)) { defT = 0;
+      for (let i = 0; i < CFG.defenderGroup; i++) spawnUnit('en', null, null); }
     if (autoT > CFG.autoSoldierEvery) { autoT = 0; spawnUnit('az', null, null); }
-  } else updCaptured(dt);
+    // 3) vaxt limiti
+    timeLeft -= dt; roundT += dt;
+    // itki qorxusu: uzun müddət zərbə olmasa qala canını bərpa edir
+    idleT += dt;
+    if (idleT > CFG.regenAfter && lives < CFG.castleLives) { regenOn = true; regenT += dt;
+      if (regenT >= CFG.regenEvery) { regenT = 0; lives++;
+        floaters.push({ x: W / 2 + (Math.random() - .5) * 200, y: CASTLE.y + 100, txt: '+1 🔧', t: 1.2, c: '#5fe35f', s: 50 }); } }
+    else regenOn = false;
+    if (timeLeft <= 30 && timeLeft > 0) { heartT -= dt; if (heartT <= 0) { heartT = timeLeft < 10 ? .5 : 1; SFX.heart(); } }
+    if (timeLeft <= 0) { state = 'failed'; stateT = 0; SFX.fail(); }
+    // 2) qala cavab atəşi
+    if (!nuke) {
+      if (stage >= 1) { archerT -= dt; if (archerT <= 0) { archerT = CFG.archerEvery; archerShoot(); } }
+      if (stage >= 2) { rageT -= dt;
+        if (rageT <= 0) { const k = lives / CFG.stageCannons;
+          rageT = CFG.rageEvery[1] + (CFG.rageEvery[0] - CFG.rageEvery[1]) * k; castleFire(); } }
+      if (stage >= 3 && !tanks.length) { tankT += dt; if (tankT > CFG.tankRespawn) { tankT = 0; spawnTank(); } }
+    }
+    updTanks(dt);
+    rageBanner = Math.max(0, rageBanner - dt);
+  } else if (state === 'failed') { stateT += dt; if (stateT > 4) { const r = round; reset(); round = r; } }
+  else updCaptured(dt);
 
   for (const u of units) {
     if (u.dead) continue;
@@ -326,15 +588,15 @@ function update(dt) {
     let foe = null, fd = 1e9;
     for (const o of units) if (!o.dead && o.side !== u.side) { const d = Math.hypot(o.x - u.x, o.y - u.y); if (d < fd) { fd = d; foe = o; } }
     if (foe && fd < 55) {                              // qılınc döyüşü
-      if (u.cd <= 0) { u.cd = .8; u.swing = 1; SFX.sword(); if (--foe.hp <= 0) killUnit(foe, u.name); }
+      if (u.cd <= 0) { u.cd = .8; u.swing = 1; SFX.sword(); foe.hp -= (u.pic && u.side === 'az') ? 2 : 1; if (foe.hp <= 0) killUnit(foe, u.name); }
     } else if (u.side === 'az' && u.y <= GATE_Y + 15) { // qalanı vur
-      if (u.cd <= 0) { u.cd = 1; u.swing = 1; hitCastle(1, u.name); u.hp--; if (u.hp <= 0) killUnit(u); }
+      if (u.cd <= 0) { u.cd = 1; u.swing = 1; hitCastle(u.pic ? 2 : 1, u.name); u.hp--; if (u.hp <= 0) killUnit(u); }
     } else {
-      let tx = foe && fd < 260 ? foe.x : u.x, ty = foe && fd < 260 ? foe.y : (u.side === 'az' ? GATE_Y : H - 300);
+      let tx = foe && fd < 260 ? foe.x : u.x, ty = foe && fd < 260 ? foe.y : (u.side === 'az' ? GATE_Y : H - 80);
       if (u.side === 'az' && !(foe && fd < 260)) tx = Math.min(Math.max(u.x, CASTLE.x + 60), CASTLE.x + CASTLE.w - 60);
       const a = Math.atan2(ty - u.y, tx - u.x);
       u.x += Math.cos(a) * u.spd * dt; u.y += Math.sin(a) * u.spd * dt; u.walk += dt * 10;
-      if (u.side === 'en' && u.y > H - 320) killUnit(u);
+      if (u.side === 'en' && u.y > H - 60) killUnit(u);
     }
   }
   units = units.filter(u => !u.dead);
@@ -343,6 +605,15 @@ function update(dt) {
     s.t += dt / s.dur;
     if (s.t >= 1 && !s.done) { s.done = true;
       if (s.kind === 'arrow') { const v = units.find(u => u.side === 'en' && Math.hypot(u.x - s.tx, u.y - s.ty) < 50); if (v) killUnit(v); }
+      else if (s.kind === 'rarrow') { const v = units.find(u => u.side === 'en' && !u.dead && Math.hypot(u.x - s.tx, u.y - 30 - s.ty) < 60);
+        if (v) killUnit(v, s.user); }
+      else if (s.kind === 'tshell') { booms.push({ x: s.tx, y: s.ty, r: 120, t: 0 }); SFX.boom(false); shake = Math.max(shake, 8);
+        for (const u of units) if (u.side === 'az' && Math.hypot(u.x - s.tx, u.y - s.ty) < 100) killUnit(u);
+        for (const c of cannons) if (Math.hypot(c.x - s.tx, c.y - s.ty) < 100) c.phase = 'out'; }
+      else if (s.kind === 'earrow') { const v = s.tgt; if (v && !v.dead && Math.hypot(v.x - s.tx, v.y - 40 - s.ty) < 80 && --v.hp <= 0) killUnit(v); }
+      else if (s.kind === 'eball') { booms.push({ x: s.tx, y: s.ty, r: 110, t: 0 }); SFX.boom(false);
+        for (const u of units) if (u.side === 'az' && Math.hypot(u.x - s.tx, u.y - s.ty) < 90) killUnit(u);
+        for (const c of cannons) if (Math.hypot(c.x - s.tx, c.y - s.ty) < 90) c.phase = 'out'; }
       else if (s.kind === 'ball' || s.kind === 'cball') explode(s.tx, s.ty, 140, s.user, 1);
       else explode(s.tx, s.ty, 240, s.user, 3);
     }
@@ -352,7 +623,7 @@ function update(dt) {
   parts.forEach(p => { p.t -= dt; p.x += p.vx * dt; p.y += p.vy * dt; if (!p.conf) p.vy += 900 * dt; });
   parts = parts.filter(p => p.t > 0 && p.y < H + 20);
   floaters.forEach(f => { f.t -= dt; f.y -= 60 * dt; }); floaters = floaters.filter(f => f.t > 0);
-  updCannons(dt); updNuke(dt); shake *= .9;
+  updCannons(dt); updRams(dt); updNuke(dt); shake *= .9;
 }
 
 // ================= ÇƏKİLİŞ =================
@@ -360,13 +631,50 @@ function txt(s, x, y, size, col, align = 'center') {
   ctx.font = `bold ${size}px Arial`; ctx.textAlign = align; ctx.textBaseline = 'middle';
   ctx.lineWidth = size / 7; ctx.strokeStyle = '#000'; ctx.strokeText(s, x, y); ctx.fillStyle = col; ctx.fillText(s, x, y);
 }
-function drawBg() {
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, '#f5a35c'); g.addColorStop(.3, '#f7d79a'); g.addColorStop(.31, '#a58a5a'); g.addColorStop(1, '#6e5a38');
-  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#8f7a8a'; ctx.beginPath(); ctx.moveTo(0, 600); ctx.lineTo(250, 380); ctx.lineTo(420, 520);
-  ctx.lineTo(640, 300); ctx.lineTo(860, 480); ctx.lineTo(W, 360); ctx.lineTo(W, 600); ctx.fill();
+// ---- Ərazi: bir dəfə ayrıca kətana çəkilir (sürət üçün) + partlayış çuxurları üstünə əlavə olunur ----
+const bgCv = document.createElement('canvas'); bgCv.width = W; bgCv.height = H;
+const decalCv = document.createElement('canvas'); decalCv.width = W; decalCv.height = H;
+const decal = decalCv.getContext('2d');
+(function buildBg() {
+  const g = bgCv.getContext('2d'); let sd = 11; const r = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+  // səma
+  let gr = g.createLinearGradient(0, 0, 0, 760);
+  gr.addColorStop(0, '#3d6fa8'); gr.addColorStop(.55, '#e9a46a'); gr.addColorStop(1, '#f6d9a0');
+  g.fillStyle = gr; g.fillRect(0, 0, W, 780);
+  // günəş
+  gr = g.createRadialGradient(830, 420, 10, 830, 420, 220); gr.addColorStop(0, 'rgba(255,240,200,1)'); gr.addColorStop(.25, 'rgba(255,220,150,.8)'); gr.addColorStop(1, 'rgba(255,200,120,0)');
+  g.fillStyle = gr; g.fillRect(560, 160, 540, 540);
+  // uzaqda qarlı iki zirvəli dağ
+  g.fillStyle = '#9c8fa8'; g.beginPath(); g.moveTo(-50, 640); g.lineTo(260, 300); g.lineTo(360, 360); g.lineTo(470, 230); g.lineTo(760, 600); g.lineTo(-50, 700); g.fill();
+  g.fillStyle = '#f4f1f6'; g.beginPath(); g.moveTo(470, 230); g.lineTo(530, 305); g.lineTo(505, 300); g.lineTo(480, 320); g.lineTo(455, 296); g.lineTo(420, 292); g.fill();
+  g.beginPath(); g.moveTo(260, 300); g.lineTo(300, 345); g.lineTo(275, 340); g.lineTo(250, 352); g.lineTo(225, 340); g.fill();
+  // orta təpələr
+  g.fillStyle = '#7f7a6a'; g.beginPath(); g.moveTo(0, 700); for (let x = 0; x <= W; x += 60) g.lineTo(x, 600 + Math.sin(x / 140) * 40 + r() * 20); g.lineTo(W, 760); g.lineTo(0, 760); g.fill();
+  g.fillStyle = '#6f7a4a'; g.beginPath(); g.moveTo(0, 740); for (let x = 0; x <= W; x += 50) g.lineTo(x, 680 + Math.sin(x / 90 + 2) * 25 + r() * 15); g.lineTo(W, 800); g.lineTo(0, 800); g.fill();
+  // döyüş meydanı (torpaq + ot)
+  gr = g.createLinearGradient(0, 720, 0, H); gr.addColorStop(0, '#8d8a52'); gr.addColorStop(.4, '#9a7e4e'); gr.addColorStop(1, '#5e4a2c');
+  g.fillStyle = gr; g.fillRect(0, 720, W, H - 720);
+  for (let i = 0; i < 2600; i++) { const x = r() * W, y = 740 + r() * (H - 740);
+    g.fillStyle = r() < .5 ? `rgba(70,90,30,${.25 + r() * .3})` : `rgba(60,40,20,${.15 + r() * .2})`; g.fillRect(x, y, 2 + r() * 4, 2 + r() * 6); }
+  // darvazaya gedən yol
+  g.fillStyle = 'rgba(190,160,110,.55)'; g.beginPath(); g.moveTo(CASTLE.x + CASTLE.w / 2 - 90, GATE_Y); g.lineTo(CASTLE.x + CASTLE.w / 2 + 90, GATE_Y);
+  g.lineTo(W / 2 + 330, H); g.lineTo(W / 2 - 330, H); g.fill();
+  for (let i = 0; i < 300; i++) { const t = r(), y = GATE_Y + t * (H - GATE_Y), hw = 90 + t * 240;
+    g.fillStyle = 'rgba(120,95,60,.35)'; g.fillRect(W / 2 + (r() * 2 - 1) * hw, y, 6, 4); }
+  // daşlar
+  for (let i = 0; i < 40; i++) { const x = r() * W, y = 800 + r() * (H - 900), s = 6 + r() * 16;
+    g.fillStyle = '#6b6156'; g.beginPath(); g.ellipse(x, y, s, s * .6, 0, 0, 7); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.18)'; g.beginPath(); g.ellipse(x - s * .3, y - s * .2, s * .4, s * .2, 0, 0, 7); g.fill(); }
+  // qala ətrafında xəndək kölgəsi
+  g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(CASTLE.x - 60, GATE_Y - 10, CASTLE.w + 120, 30);
+})();
+function addCrater(x, y, r) {
+  if (y < GATE_Y) return;
+  const s = r * .45, gr = decal.createRadialGradient(x, y, 0, x, y, s);
+  gr.addColorStop(0, 'rgba(30,20,10,.55)'); gr.addColorStop(.6, 'rgba(50,35,20,.35)'); gr.addColorStop(1, 'rgba(50,35,20,0)');
+  decal.fillStyle = gr; decal.beginPath(); decal.ellipse(x, y, s, s * .55, 0, 0, 7); decal.fill();
 }
+function drawBg() { ctx.drawImage(bgCv, 0, 0); ctx.drawImage(decalCv, 0, 0); }
 function drawCastle() {
   const { x, y, w, h } = CASTLE;
   const dmg = 1 - lives / CFG.castleLives;
@@ -420,28 +728,155 @@ function drawCastle() {
   if (state === 'play' || flagY < 1) enemyFlag(px + 6, top + 15 + flagY * range, fw, fh);
   if (state === 'captured' && flagY >= 1) azFlag(px + 6, top + 15 + azFlagY * range, fw, fh);
 }
+// Əsgər: bizimkilər — papaq + çuxa (qazırlı), əyri qılınc; müdafiəçilər — dəmir dəbilqə, zireh, qalxan
+// Süvari: altında at, atlı yuxarıda
 function drawUnit(u) {
-  const az = u.side === 'az', bob = Math.sin(u.walk) * 4;
-  ctx.save(); ctx.translate(u.x, u.y + bob);
-  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(0, 4 - bob, 26, 8, 0, 0, 7); ctx.fill();
-  ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-14, -30, 10, 30 - Math.sin(u.walk) * 4); ctx.fillRect(4, -30, 10, 30 + Math.sin(u.walk) * 4);
-  ctx.fillStyle = az ? '#1f6fb5' : '#4a4a4a'; ctx.fillRect(-20, -78, 40, 50);
-  ctx.fillStyle = az ? '#EF3340' : '#777'; ctx.fillRect(-20, -55, 40, 8);
-  // qılınc
-  ctx.save(); ctx.translate(az ? 22 : -22, -60); ctx.rotate((az ? -1 : 1) * (0.6 - u.swing * 1.8));
-  ctx.fillStyle = '#ddd'; ctx.fillRect(-3, -55, 6, 55); ctx.fillStyle = '#a07a2c'; ctx.fillRect(-10, -4, 20, 6); ctx.restore();
+  if (!u.cav && u.side === 'az' && u.pic) {   // gül əsgəri: böyük + qızılı parıltı
+    const pulse = .5 + Math.sin(performance.now() / 200 + u.x) * .2;
+    const gr = ctx.createRadialGradient(u.x, u.y - 50, 5, u.x, u.y - 50, 75);
+    gr.addColorStop(0, `rgba(255,211,77,${pulse * .55})`); gr.addColorStop(1, 'rgba(255,211,77,0)');
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(u.x, u.y - 50, 75, 0, 7); ctx.fill();
+    ctx.save(); ctx.translate(u.x, u.y); ctx.scale(1.2, 1.2); ctx.translate(-u.x, -u.y); drawSoldier(u); ctx.restore();
+    return;
+  }
+  if (!u.cav) return drawSoldier(u);
+  // istiqamət: sola gedirsə at sola baxır
+  if (u.px !== undefined && Math.abs(u.x - u.px) > .3) u.face = u.x < u.px ? -1 : 1;
+  u.px = u.x; const fc = u.face || 1;
+  const g = u.walk * 1.3, s = Math.sin(g), c = Math.cos(g), lift = Math.abs(s) * 7;
+  ctx.save(); ctx.translate(u.x, u.y);
+  ctx.fillStyle = 'rgba(0,0,0,.3)'; ctx.beginPath(); ctx.ellipse(0, 2, 62, 11, 0, 0, 7); ctx.fill();
+  ctx.scale(fc, 1); ctx.translate(0, -lift);
+  const leg = (x, ph, far) => {   // iki oynaqlı at ayağı
+    const a = Math.sin(g + ph) * .55, k = Math.max(0, Math.cos(g + ph)) * .9;
+    ctx.save(); ctx.translate(x, -50); ctx.rotate(a);
+    ctx.strokeStyle = far ? '#5a3418' : '#7a4a22'; ctx.lineWidth = 11; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 24); ctx.stroke();
+    ctx.translate(0, 24); ctx.rotate(-k); ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 22); ctx.stroke();
+    ctx.fillStyle = '#1a120a'; ctx.fillRect(-5, 20, 11, 6); ctx.restore(); };
+  // arxa tərəf ayaqları (tünd)
+  leg(-34, Math.PI, true); leg(30, 0, true);
+  // quyruq
+  ctx.strokeStyle = '#2a1a0c'; ctx.lineWidth = 9; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-58, -70); ctx.quadraticCurveTo(-82, -60 + c * 8, -78, -30 + s * 6); ctx.stroke();
+  // gövdə
+  const bg = ctx.createLinearGradient(0, -90, 0, -40); bg.addColorStop(0, '#9a6232'); bg.addColorStop(1, '#6b3f1c');
+  ctx.fillStyle = bg; ctx.beginPath(); ctx.ellipse(0, -66, 60, 24, 0, 0, 7); ctx.fill();
+  // boyun + baş
+  ctx.beginPath(); ctx.moveTo(36, -82); ctx.quadraticCurveTo(52, -118, 66, -128); ctx.lineTo(82, -116); ctx.quadraticCurveTo(66, -90, 58, -58); ctx.fill();
+  ctx.save(); ctx.translate(80, -120); ctx.rotate(.55 + s * .06);
+  ctx.beginPath(); ctx.ellipse(8, 0, 24, 11, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#1a120a'; ctx.beginPath(); ctx.arc(26, 2, 3, 0, 7); ctx.fill();   // burun
+  ctx.beginPath(); ctx.arc(0, -4, 2.5, 0, 7); ctx.fill();                              // göz
+  ctx.fillStyle = '#7a4a22'; ctx.beginPath(); ctx.moveTo(-10, -8); ctx.lineTo(-6, -22); ctx.lineTo(-1, -8); ctx.fill(); // qulaq
   ctx.restore();
-  const hy = u.y + bob - 102;
+  // yal
+  ctx.fillStyle = '#2a1a0c'; ctx.beginPath(); ctx.moveTo(34, -86); ctx.quadraticCurveTo(50, -122, 70, -132);
+  ctx.lineTo(64, -118 + s * 3); ctx.quadraticCurveTo(48, -104, 42, -80); ctx.fill();
+  // yüyən
+  ctx.strokeStyle = '#3a2210'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(92, -106); ctx.lineTo(28, -100); ctx.stroke();
+  // yəhər + üzəngi qayışı
+  ctx.fillStyle = '#EF3340'; ctx.beginPath(); ctx.ellipse(-4, -88, 24, 9, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#1e5c96'; ctx.fillRect(-26, -82, 44, 14);   // yəhər örtüyü
+  ctx.fillStyle = '#e8c35a'; ctx.fillRect(-26, -70, 44, 3);
+  // ön tərəf ayaqları (açıq)
+  leg(-26, 0, false); leg(38, Math.PI, false);
+  // ---- ATLI (oturur) ----
+  ctx.translate(-2, -92);
+  // ayaq: budu irəli, baldır aşağı, çəkmə üzəngidə
+  ctx.fillStyle = '#2b2b33'; ctx.save(); ctx.rotate(-.25); ctx.fillRect(-6, -6, 30, 13); ctx.restore();
+  ctx.save(); ctx.translate(22, 0); ctx.fillRect(-6, 0, 12, 30); ctx.fillStyle = '#1a120a'; ctx.fillRect(-7, 26, 18, 9); ctx.restore();
+  // gövdə (çuxa)
+  ctx.fillStyle = '#1e5c96'; ctx.beginPath(); ctx.moveTo(-14, -2); ctx.lineTo(16, -2); ctx.lineTo(12, -50); ctx.lineTo(-10, -50); ctx.fill();
+  ctx.fillStyle = '#d9c38a'; for (let i = 0; i < 3; i++) ctx.fillRect(2, -44 + i * 7, 9, 3);
+  ctx.fillStyle = '#EF3340'; ctx.fillRect(-14, -14, 30, 5);
+  // qılınc qolu — havaya qaldırılıb, vuranda endirir
+  ctx.save(); ctx.translate(4, -44); ctx.rotate(-2.3 + u.swing * 2.2 + s * .08);
+  ctx.fillStyle = '#1e5c96'; ctx.fillRect(-5, 0, 10, 24); ctx.translate(0, 26);
+  ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(0, 0, 6, 0, 7); ctx.fill();
+  ctx.fillStyle = '#c9a23a'; ctx.fillRect(-9, -3, 18, 5);
+  ctx.strokeStyle = '#e8e8ee'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(16, 30, 6, 66); ctx.stroke();
+  ctx.restore(); ctx.lineCap = 'butt';
+  ctx.restore();
+  // baş / profil şəkli (atlının başı yerində)
+  const hx = u.x + fc * 2, hy = u.y - lift - 92 - 50 - 30;
+  if (u.pic) { drawPic(u.pic, hx, hy, 26, '#ffd34d'); txt(u.name.slice(0, 12), hx, hy - 42, 22, '#fff'); }
+  else { ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(hx, hy + 4, 15, 0, 7); ctx.fill();
+    ctx.fillStyle = '#2a1d14'; ctx.fillRect(hx - 17, hy - 22, 34, 20); }
+}
+function drawSoldier(u) {
+  const az = u.side === 'az', s = Math.sin(u.walk), bob = Math.abs(s) * 4;
+  ctx.save(); ctx.translate(u.x, u.y);
+  ctx.fillStyle = 'rgba(0,0,0,.28)'; ctx.beginPath(); ctx.ellipse(0, 2, 26, 8, 0, 0, 7); ctx.fill();
+  ctx.translate(0, -bob);
+  // ayaqlar + çəkmələr
+  for (const [lx, ph] of [[-8, s], [8, -s]]) { ctx.save(); ctx.translate(lx, -32); ctx.rotate(ph * .45);
+    ctx.fillStyle = az ? '#2b2b33' : '#3a3a3a'; ctx.fillRect(-5, 0, 10, 24);
+    ctx.fillStyle = '#1a120a'; ctx.fillRect(-6, 20, 14, 10); ctx.restore(); }
+  if (az) {
+    // çuxa (aşağı genişlənən palto)
+    ctx.fillStyle = '#1e5c96'; ctx.beginPath(); ctx.moveTo(-17, -82); ctx.lineTo(17, -82); ctx.lineTo(24, -26); ctx.lineTo(-24, -26); ctx.fill();
+    ctx.fillStyle = '#16466f'; ctx.fillRect(-2, -80, 4, 54);
+    // qazırlar (sinədə patron yuvaları)
+    ctx.fillStyle = '#d9c38a'; for (let i = 0; i < 4; i++) { ctx.fillRect(-15, -76 + i * 6, 9, 3); ctx.fillRect(6, -76 + i * 6, 9, 3); }
+    // kəmər
+    ctx.fillStyle = '#EF3340'; ctx.fillRect(-19, -52, 38, 6); ctx.fillStyle = '#e8c35a'; ctx.fillRect(-4, -53, 8, 8);
+  } else {
+    // zireh + qalxan
+    ctx.fillStyle = '#55585e'; ctx.beginPath(); ctx.moveTo(-18, -82); ctx.lineTo(18, -82); ctx.lineTo(20, -30); ctx.lineTo(-20, -30); ctx.fill();
+    ctx.strokeStyle = '#3a3c40'; ctx.lineWidth = 2; for (let i = 0; i < 4; i++) { ctx.beginPath(); ctx.moveTo(-18, -72 + i * 11); ctx.lineTo(18, -72 + i * 11); ctx.stroke(); }
+    ctx.fillStyle = '#2a2a2a'; ctx.fillRect(-20, -46, 40, 5);
+  }
+  // qol + qılınc (vuranda yellənir)
+  ctx.save(); ctx.translate(az ? 16 : -16, -74); const sw = (az ? -1 : 1) * (0.5 - u.swing * 2.0) + s * .15 * (u.swing ? 0 : 1);
+  ctx.rotate(sw); ctx.fillStyle = az ? '#1e5c96' : '#55585e'; ctx.fillRect(-5, 0, 10, 26);
+  ctx.translate(0, 26); ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(0, 0, 6, 0, 7); ctx.fill();
+  ctx.fillStyle = '#c9a23a'; ctx.fillRect(-9, -3, 18, 5);
+  ctx.strokeStyle = '#e8e8ee'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(az ? 14 : -14, -30, az ? 6 : -6, -62); ctx.stroke(); ctx.lineCap = 'butt';
+  if (u.swing > .5) { ctx.strokeStyle = `rgba(255,255,255,${u.swing - .4})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, 0, 58, -2.4, -0.8); ctx.stroke(); }
+  ctx.restore();
+  // digər qol (müdafiəçidə qalxan)
+  if (!az) { ctx.fillStyle = '#6b4a24'; ctx.beginPath(); ctx.ellipse(16, -58, 13, 20, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#999'; ctx.lineWidth = 3; ctx.stroke(); ctx.fillStyle = '#999'; ctx.beginPath(); ctx.arc(16, -58, 4, 0, 7); ctx.fill(); }
+  ctx.restore();
+  const hy = u.y - bob - 100;
   if (u.pic) { drawPic(u.pic, u.x, hy, 30, '#ffd34d'); txt(u.name.slice(0, 12), u.x, hy - 46, 22, '#fff'); }
-  else { ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(u.x, hy + 6, 20, 0, 7); ctx.fill();
-    ctx.fillStyle = az ? '#1f6fb5' : '#333'; ctx.fillRect(u.x - 22, hy - 16, 44, 12); }
-  if (az && !u.pic) { ctx.fillStyle = '#555'; ctx.fillRect(u.x - 26, u.y - 140 + bob, 3, 40); azFlag(u.x - 23, u.y - 140 + bob, 30, 18); }
+  else {
+    ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(u.x, hy + 6, 17, 0, 7); ctx.fill();
+    if (az) { // qara bığ + papaq
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(u.x - 7, hy + 12, 14, 3);
+      ctx.fillStyle = '#2a1d14'; ctx.beginPath(); ctx.moveTo(u.x - 19, hy - 2); ctx.lineTo(u.x - 16, hy - 26); ctx.lineTo(u.x + 16, hy - 26); ctx.lineTo(u.x + 19, hy - 2); ctx.fill();
+      ctx.fillStyle = '#3a2a1e'; for (let i = 0; i < 5; i++) { ctx.beginPath(); ctx.arc(u.x - 14 + i * 7, hy - 24, 4, 0, 7); ctx.fill(); }
+    } else { // tikanlı dəbilqə
+      ctx.fillStyle = '#707780'; ctx.beginPath(); ctx.arc(u.x, hy + 2, 19, Math.PI, 0); ctx.fill(); ctx.fillRect(u.x - 21, hy, 42, 5);
+      ctx.beginPath(); ctx.moveTo(u.x - 3, hy - 16); ctx.lineTo(u.x, hy - 30); ctx.lineTo(u.x + 3, hy - 16); ctx.fill();
+      ctx.fillStyle = '#222'; ctx.fillRect(u.x - 10, hy + 6, 20, 3);
+    }
+  }
+  if (az && !u.pic) { const fy = u.y - 150 - bob, wv = Math.sin(performance.now() / 150 + u.x) * 2;
+    ctx.fillStyle = '#4a3a2a'; ctx.fillRect(u.x - 26, fy, 3, 48); azFlag(u.x - 23, fy + wv, 30, 18); }
 }
 function drawShots() {
   for (const s of shots) {
     const k = s.kind === 'arrow' ? s.t : s.t * s.t;
     const x = s.x + (s.tx - s.x) * s.t, y = s.y + (s.ty - s.y) * k;
     if (s.kind === 'arrow') { ctx.strokeStyle = '#3a2a14'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + 40); ctx.stroke(); continue; }
+    if (s.kind === 'rarrow') { const a = Math.atan2(s.ty - s.y, s.tx - s.x);
+      ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.strokeStyle = '#2a1a0a'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(-40, 0); ctx.lineTo(10, 0); ctx.stroke(); ctx.fillStyle = '#9fe3ff';
+      ctx.beginPath(); ctx.moveTo(18, 0); ctx.lineTo(6, -7); ctx.lineTo(6, 7); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.fillRect(-42, -5, 10, 10); ctx.restore(); continue; }
+    if (s.kind === 'tshell') { ctx.fillStyle = '#ffde59'; ctx.beginPath(); ctx.arc(x, y, 12, 0, 7); ctx.fill();
+      parts.push({ x, y, vx: 0, vy: 0, t: .2, c: '#ffae00', conf: 1, sz: 10 }); continue; }
+    if (s.kind === 'earrow') { const ay = y - Math.sin(Math.PI * s.t) * 120, a = Math.atan2(s.ty - s.y, s.tx - s.x);
+      ctx.save(); ctx.translate(x, ay); ctx.rotate(a); ctx.strokeStyle = '#2a1a0a'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(-30, 0); ctx.lineTo(10, 0); ctx.stroke();
+      ctx.fillStyle = '#888'; ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(6, -6); ctx.lineTo(6, 6); ctx.fill(); ctx.restore(); continue; }
+    if (s.kind === 'eball') { const cy = s.y + (s.ty - s.y) * s.t - Math.sin(Math.PI * s.t) * 180;
+      ctx.fillStyle = '#ff5a1f'; ctx.beginPath(); ctx.arc(x, cy, 20, 0, 7); ctx.fill();
+      ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(x, cy, 13, 0, 7); ctx.fill();
+      parts.push({ x, y: cy, vx: 0, vy: 0, t: .3, c: '#ff7a1a', conf: 1 }); continue; }
     if (s.kind === 'cball') { const cy = s.y + (s.ty - s.y) * s.t - Math.sin(Math.PI * s.t) * 260;
       ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(x, cy, 18, 0, 7); ctx.fill();
       parts.push({ x, y: cy, vx: 0, vy: 0, t: .25, c: '#999', conf: 1 }); continue; }
@@ -457,21 +892,40 @@ function drawShots() {
 function drawHud() {
   // can zolağı
   const bx = 90, by = 70, bw = 900, bh = 56, k = lives / CFG.castleLives;
-  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(bx - 6, by - 6, bw + 12, bh + 12);
+  const danger = state === 'play' && k <= .15, blink = Math.sin(performance.now() / 110) > 0;
+  ctx.fillStyle = danger && blink ? 'rgba(255,40,40,.9)' : 'rgba(0,0,0,.6)'; ctx.fillRect(bx - 6, by - 6, bw + 12, bh + 12);
   ctx.fillStyle = k > .5 ? '#3fbf4a' : k > .2 ? '#f0b429' : '#e53935'; ctx.fillRect(bx, by, bw * k, bh);
-  txt(`QALA CANI  ${lives} / ${CFG.castleLives}`, W / 2, by + bh / 2, 34, '#fff');
-  txt(`Raund ${round}`, bx, 30, 30, '#fff', 'left');
-  txt('🎯 Məqsəd: QALANI AL!', W - bx, 30, 30, '#ffd34d', 'right');
+  if (regenOn && state === 'play') { ctx.fillStyle = `rgba(95,227,95,${.35 + Math.sin(performance.now() / 150) * .25})`; ctx.fillRect(bx, by, bw * k, bh); }
+  txt(regenOn && state === 'play' ? `🔧 QALA BƏRPA OLUNUR  ${lives} / ${CFG.castleLives}` : `QALA CANI  ${lives} / ${CFG.castleLives}`, W / 2, by + bh / 2, 34, '#fff');
+  // qala nömrəsi + ümumi uğur (sosial sübut, rekord)
+  txt(`🏰 ${round}-ci qala`, 20, 30, 28, '#fff', 'left');
+  txt(`Fəth: ${STATS.conquered}` + (STATS.best ? `  ·  Rekord ${fmtT(STATS.best)}` : ''), W - 20, 30, 24, '#fff', 'right');
+  // daimi məqsəd yazısı (yayına sonradan girən də görsün)
+  const gp = 1 + Math.sin(performance.now() / 300) * .03;
+  ctx.save(); ctx.translate(W / 2, 30); ctx.scale(gp, gp);
+  azFlag(-180, -14, 44, 28); txt('🎯 QALANI AL!', 25, 2, 40, '#ffd34d'); ctx.restore();
+  // bridge nişanı (kiçik nöqtə, saatın altında)
+  const bs = { connected: ['#3fdc5a', 'TikTok'], test: ['#4aa3ff', 'TEST'], waiting: ['#f0b429', 'Gözləyir'], off: ['#e53935', 'Bridge yox'] }[bridgeState] || ['#888', ''];
+  ctx.fillStyle = bs[0]; ctx.beginPath(); ctx.arc(W - 290, 300, 9, 0, 7); ctx.fill();
+  txt(bs[1], W - 274, 300, 20, '#fff', 'left');
+  // taymer
+  const tl = Math.max(0, Math.ceil(timeLeft)), urgent = tl <= 30;
+  const ts = `⏱ ${Math.floor(tl / 60)}:${String(tl % 60).padStart(2, '0')}`;
+  const tp = urgent ? 1 + Math.abs(Math.sin(performance.now() / (tl < 10 ? 160 : 320))) * .25 : 1;
+  ctx.fillStyle = urgent ? 'rgba(150,0,0,.75)' : 'rgba(0,0,0,.5)'; ctx.fillRect(W - 300, 160, 280, 80);
+  ctx.save(); ctx.translate(W - 160, 200); ctx.scale(tp, tp); txt(ts, 0, 0, 48, urgent ? '#fff' : '#ffd34d'); ctx.restore();
+  if (state === 'play' && stage) txt(['', '🏹 Oxçular', '💣 Qala topu', '🛡 TANK'][stage], W - 160, 270, 28, '#ff7a1a');
+  // can zolağında səviyyə nişanları
+  for (const [v, ic] of [[CFG.stageArchers, '🏹'], [CFG.stageCannons, '💣'], [CFG.stageTank, '🛡']]) {
+    const mx = bx + bw * v / CFG.castleLives; ctx.fillStyle = '#fff'; ctx.fillRect(mx - 2, by - 6, 4, bh + 12);
+    txt(ic, mx, by + bh + 26, 26, '#fff'); }
   // top-5
-  const top = [...board.values()].sort((a, b) => b.kills - a.kills || b.coins - a.coins).slice(0, 5);
+  // top-5: qalaya ən çox zərbə vuranlar (💥), sonra öldürmə sayı
+  const top = [...board.values()].sort((a, b) => b.dmg - a.dmg || b.kills - a.kills || b.coins - a.coins).slice(0, 5);
   ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(20, 160, 360, 40 + top.length * 62);
-  txt('🏆 TOP-5', 40, 185, 28, '#ffd34d', 'left');
-  top.forEach((b, i) => { const y = 235 + i * 62; drawPic(b.pic, 60, y, 24);
-    txt((b.atom ? '☢ ' : '') + b.name.slice(0, 11), 96, y, 24, '#fff', 'left'); txt(String(b.kills), 360, y, 26, '#ffd34d', 'right'); });
-  // hədiyyə paneli
-  const py = H - 260; ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, py, W, 260);
-  const items = [['❤ Like', 'Əsgər'], ['🌹 Gül', 'Sənin əsgərin'], ['💣 10+', 'Top'], ['🚀 100+', 'Raket'], ['🦁 Şir', 'ATOM']];
-  items.forEach(([a, b], i) => { const x = 108 + i * 216; txt(a, x, py + 80, 34, '#fff'); txt(b, x, py + 135, 26, i === 4 ? '#ff5252' : '#ffd34d'); });
+  txt('🏆 QƏHRƏMANLAR', 40, 185, 26, '#ffd34d', 'left'); txt('💥', 360, 185, 24, '#fff', 'right');
+  top.forEach((b, i) => { const y = 235 + i * 62; drawPic(b.pic, 60, y, 24, i === 0 ? '#ffd34d' : '#fff');
+    txt((i === 0 ? '👑 ' : '') + (b.atom ? '☢ ' : '') + b.name.slice(0, 10), 96, y, 24, '#fff', 'left'); txt(String(b.dmg), 360, y, 26, '#ffd34d', 'right'); });
 }
 // İlk 5 saniyə: məqsəd ekranı (hər raundun əvvəlində)
 function drawIntro() {
@@ -482,7 +936,7 @@ function drawIntro() {
   azFlag(W / 2 - 90, 1050, 180, 110);
   const p = 1 + Math.sin(introT * 6) * .05;
   ctx.save(); ctx.translate(W / 2, 1235); ctx.scale(p, p); txt('🎯 QALANI AL!', 0, 0, 96, '#ffd34d'); ctx.restore();
-  txt('Hədiyyə at → əsgər, top, raket göndər', W / 2, 1340, 42, '#fff');
+  txt('Əsgərlər, toplar, raketlər hücumda!', W / 2, 1340, 42, '#fff');
   txt('Qalanın canını 0-a endir!', W / 2, 1400, 42, '#fff');
   txt('🦁 Şir = ☢ ATOM BOMBASI', W / 2, 1480, 48, '#ff5252');
   // qalaya göstərən ox
@@ -493,8 +947,10 @@ function drawIntro() {
 function draw() {
   ctx.save();
   if (shake > .5) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
-  drawBg(); drawCastle();
+  drawBg(); drawCastle(); drawArchers();
   units.sort((a, b) => a.y - b.y).forEach(drawUnit);
+  tanks.forEach(drawTank);
+  rams.forEach(drawRam);
   cannons.forEach(drawCannon);
   drawShots();
   for (const b of booms) { const k = b.t / .7;
@@ -504,36 +960,88 @@ function draw() {
   ctx.restore();
   drawHud(); drawNuke();
   if (state === 'captured' && stateT > 4.5) {
-    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, 1150, W, 300);
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 1030, W, 620);
     const s = 1 + Math.sin(stateT * 4) * .04;
-    ctx.save(); ctx.translate(W / 2, 1260); ctx.scale(s, s); txt('İRƏVAN QALASI', 0, 0, 92, '#fff'); txt('ALINDI! 🇦🇿', 0, 110, 92, '#ffd34d'); ctx.restore();
+    ctx.save(); ctx.translate(W / 2, 1110); ctx.scale(s, s); txt('İRƏVAN QALASI ALINDI!', 30, 0, 66, '#fff'); azFlag(-430, -22, 66, 42); ctx.restore();
+    // 1) qalanı alan qəhrəman
+    if (capHero) {
+      const k = Math.min(1, (stateT - 4.5) / .5), r = 120 * (0.3 + 0.7 * k);
+      for (let i = 0; i < 12; i++) { const a = i / 12 * 6.283 + stateT; ctx.strokeStyle = 'rgba(255,211,77,.35)'; ctx.lineWidth = 10;
+        ctx.beginPath(); ctx.moveTo(W / 2 + Math.cos(a) * 140, 1320 + Math.sin(a) * 140); ctx.lineTo(W / 2 + Math.cos(a) * 220, 1320 + Math.sin(a) * 220); ctx.stroke(); }
+      drawPic(capHero.pic, W / 2, 1320, r, '#ffd34d');
+      ctx.save(); ctx.translate(W / 2 + r * .75, 1320 - r * .75); ctx.rotate(.4); txt('👑', 0, 0, 70, '#ffd34d'); ctx.restore();
+      txt('QALANI ALDI:', W / 2, 1490, 44, '#ffd34d');
+      txt(capHero.name, W / 2, 1555, 64, '#fff');
+    }
+    if (lastWin) {
+      txt(`⏱ ${fmtT(lastWin.time)}` + (lastWin.record ? '  🏆 YENİ REKORD!' : ''), W / 2, 1185, 40, lastWin.record ? '#ffd34d' : '#fff');
+      if (stateT > 7) { const a = Math.min(1, (stateT - 7) / .5); ctx.globalAlpha = a;
+        ctx.fillStyle = 'rgba(120,0,0,.85)'; ctx.fillRect(0, 1610, W, 50);
+        txt(`⚔ Növbəti qala: ${lastWin.next} can — daha güclü!`, W / 2, 1636, 34, '#fff'); ctx.globalAlpha = 1; }
+    }
   }
-  drawIntro();
-  if (nukeQueue.length) txt(`☢ Növbədə: ${nukeQueue.length}`, W - 40, 185, 28, '#ff5252', 'right');
+  if (state === 'play' && rageBanner > 0) {
+    const a = Math.min(1, rageBanner); ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(160,0,0,.75)'; ctx.fillRect(0, 1060, W, 220);
+    txt(bannerMsg[0], W / 2, 1130, 68, '#fff');
+    txt(bannerMsg[1], W / 2, 1215, 40, '#ffd34d'); ctx.globalAlpha = 1;
+  }
+  // son canlarda: kim vuracaq?
+  if (state === 'play' && lives <= Math.max(5, CFG.castleLives * .15) && rageBanner <= 0) {
+    const p = 1 + Math.sin(performance.now() / 120) * .06;
+    ctx.save(); ctx.translate(W / 2, 1130); ctx.scale(p, p); txt('QALA DÜŞMƏK ÜZRƏDİR! 👑', 0, 0, 56, '#ffd34d'); txt('Son zərbəni kim vuracaq?', 0, 62, 38, '#fff'); ctx.restore();
+  }
+  if (state === 'failed') {
+    ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(0, 0, W, H);
+    txt('⏰ VAXT BİTDİ!', W / 2, 860, 100, '#ff5252');
+    txt('Qala canını bərpa etdi', W / 2, 990, 54, '#fff');
+    txt('Yenidən hücum! ⚔', W / 2, 1080, 54, '#ffd34d');
+  }
+  if (nukeQueue.length) txt(`☢ Növbədə: ${nukeQueue.length}`, W - 40, 380, 28, '#ff5252', 'right');
 }
 
-let last = performance.now();
-function loop(now) { const dt = Math.min(.05, (now - last) / 1000); last = now; update(dt); draw(); requestAnimationFrame(loop); }
+let last = null;
+function loop(now) {
+  requestAnimationFrame(loop);   // əvvəlcə növbəti kadrı sifariş et — bir kadrda xəta olsa da oyun donmasın
+  if (last === null) last = now;
+  const dt = Math.max(0, Math.min(.05, (now - last) / 1000)); last = now;   // mənfi dt olmasın
+  try { update(dt); draw(); } catch (e) { console.error(e); }
+}
 
 // ================= TEST / BRIDGE =================
 const names = ['Ayxan', 'Leyla', 'Murad', 'Nigar', 'Tural', 'Günel', 'Elvin', 'Səbinə', 'Rəşad', 'Aytən'];
 const rnd = () => names[(Math.random() * names.length) | 0];
 document.querySelectorAll('#test [data-c]').forEach(b => b.onclick = () => {
-  const c = +b.dataset.c; onGift({ user: rnd(), coins: c, giftName: c >= 20000 ? 'Lion' : '' }); });
+  const c = +b.dataset.c; onGift({ user: rnd(), coins: c, giftName: b.dataset.g || (c >= 20000 ? 'Lion' : '') }); });
 document.getElementById('like').onclick = () => onLike();
 document.getElementById('obs').onclick = () => document.body.classList.add('obs');
 addEventListener('keydown', e => {
   const map = { '2': 1, '3': 10, '4': 100, '5': 29999 };
   if (map[e.key]) onGift({ user: rnd(), coins: map[e.key], giftName: e.key === '5' ? 'Lion' : '' });
+  const sp = { '6': ['Ice Cream Cone', 1], '7': ['Finger Heart', 5], '8': ['Perfume', 20], '9': ['Galaxy', 1000] }[e.key];
+  if (sp) onGift({ user: rnd(), coins: sp[1], giftName: sp[0] });
   if (e.key === '1') onLike();
   if (e.key.toLowerCase() === 'm') SFX.toggle();   // səsi aç/bağla
-  if (e.key.toLowerCase() === 'k') hitCastle(lives);   // test: qalanı dərhal al
+  if (e.key.toLowerCase() === 'k') hitCastle(lives, rnd() && [...board.keys()].pop());   // test: qalanı dərhal al
+  if (e.key.toLowerCase() === 'y') timeLeft = 33;                                  // test: son 30 saniyə
+  if (e.key.toLowerCase() === 'h') {   // test: növbəti müdafiə səviyyəsinə keç (40 → 30 → 20)
+    const next = [CFG.stageArchers, CFG.stageCannons, CFG.stageTank].find(v => v < lives);
+    if (next) hitCastle(lives - next); }
   if (e.key.toLowerCase() === 't') document.body.classList.toggle('obs');
 });
 // Bridge üçün: ws://localhost:8080 -> {type:'gift', user, avatar, coins, giftName} | {type:'like', user}
-try { const ws = new WebSocket('ws://localhost:8080');
-  ws.onmessage = m => { const e = JSON.parse(m.data); if (e.type === 'gift') onGift(e); else if (e.type === 'like') onLike(e.user); };
-  ws.onerror = () => {}; } catch (_) {}
+// Bridge-ə qoşulma: bridge sonra açılsa da, qopsa da 3 saniyədən bir yenidən cəhd edir
+let bridgeState = 'off';   // off | waiting | connected | test
+(function connectBridge() {
+  let ws;
+  try { ws = new WebSocket('ws://localhost:8080'); } catch (_) { return setTimeout(connectBridge, 3000); }
+  ws.onopen = () => { bridgeState = 'waiting'; };
+  ws.onmessage = m => { let e; try { e = JSON.parse(m.data); } catch (_) { return; }
+    if (e.type === 'gift') onGift(e); else if (e.type === 'like') onLike(e.user);
+    else if (e.type === 'status') bridgeState = e.tiktok; };
+  ws.onclose = () => { bridgeState = 'off'; setTimeout(connectBridge, 3000); };
+  ws.onerror = () => {};
+})();
 window.onGift = onGift; window.onLike = onLike;
 
 reset(); requestAnimationFrame(loop);

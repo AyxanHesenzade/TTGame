@@ -1,0 +1,6 @@
+{
+  "username": "",
+  "port": 8080,
+  "likesPerSecond": 6,
+  "maxRepeatPerGift": 30
+}
