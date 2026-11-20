@@ -704,7 +704,7 @@ function drawSimurq() {
 // ================= GECƏ-GÜNDÜZ + HAVA =================
 // Raund irəlilədikcə axşam düşür → gecə; hər raundda təsadüfi hava
 let weather = 'clear', wParts = [];
-function pickWeather() { weather = ['clear', 'clear', 'rain', 'snow'][(Math.random() * 4) | 0]; wParts = []; }
+function pickWeather() { weather = Math.random() < .67 ? 'clear' : 'rain'; wParts = []; }   // qar silindi
 function nightK() { return Math.min(1, roundT / (CFG.roundTime * .8)) * .55; }   // 0 → .55
 function updWeather(dt) {
   if (weather === 'clear') return;
