@@ -29,6 +29,7 @@
   <button onclick="onFollow({ user: rnd() })">F · ➕ Follow</button>
   <button onclick="onShare({ user: rnd() })">S · 🔗 Paylaşma</button>
   <button onclick="onChat({ user: rnd() + ((Math.random() * 99) | 0) })">C · 💬 Şərh</button>
+  <button onclick="onJoin({ user: 'Qonaq' + ((Math.random() * 999) | 0) })">J · 👋 Qoşuldu</button>
   <button onclick="onGift({ user: rnd(), coins: 34999, giftName: 'Universe' })">U · 🦅 Simurq</button>
   <button onclick="chestT = 0">G · 💰 Sandıq</button>
   <button id="mute" onclick="this.textContent = SFX.toggle() ? '🔇 Səs' : '🔊 Səs'">🔊 Səs</button>
@@ -156,6 +157,7 @@ function reset() {
   tanks = []; tankT = 0; stage = 0; bannerMsg = null; decal.clearRect(0, 0, W, H);
   combo = 0; comboT = 0; fury = 0; pickWeather();
   firstBlood = false; announces = []; chest = null; chestT = 40; simurq = null;
+  corpses = [];
   timeLeft = CFG.roundTime; rage = false; rageT = 0; rageBanner = 0; lastHitter = null;
   board.clear();
 }
@@ -224,7 +226,7 @@ function spawnUnit(side, name, pic) {
   units.push(u); return u;
 }
 function killUnit(u, by) {
-  if (u.dead) return; u.dead = true;
+  if (u.dead) return; u.dead = true; if (!u.cav) addCorpse(u);
   for (let i = 0; i < 8; i++) parts.push({ x: u.x, y: u.y - 30, vx: (Math.random() - .5) * 300, vy: -Math.random() * 300, t: .7, c: '#888' });
   if (u.side === 'en' && by) {
     if (!firstBlood && state === 'play') { firstBlood = true; announce(`🩸 İLK QAN: ${by}!`, '#ff5252'); }
@@ -240,8 +242,8 @@ function drawAnnounce(dt) {
   const a = announces[0]; if (!a) return;
   a.t -= dt; if (a.t <= 0) { announces.shift(); return; }
   const k = a.t > 1.9 ? (2.2 - a.t) / .3 : a.t < .3 ? a.t / .3 : 1, s = .7 + .3 * Math.min(1, k * 1.2);
-  ctx.globalAlpha = Math.max(0, k); ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0, 850, W, 100);
-  ctx.save(); ctx.translate(W / 2, 900); ctx.scale(s, s); txt(a.text, 0, 0, 52, a.color); ctx.restore(); ctx.globalAlpha = 1;
+  ctx.globalAlpha = Math.max(0, k); ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0, 420, W, 90);
+  ctx.save(); ctx.translate(W / 2, 465); ctx.scale(s, s); txt(a.text, 0, 0, 52, a.color); ctx.restore(); ctx.globalAlpha = 1;
 }
 function hitCastle(n, by) {
   if (state !== 'play') return;
@@ -469,11 +471,60 @@ function onShare({ user }) {
 }
 // Şərh → öz şəkli ilə adi əsgər (hər adam 20 saniyədə bir dəfə)
 const chatCd = new Map();
-function onChat({ user, avatar }) {
+function onChat({ user, avatar, text = '' }) {
   if (state !== 'play') return;
   cryAdd(user);
   const now = performance.now(); if (now - (chatCd.get(user) || -1e9) < 20000) return; chatCd.set(user, now);
   const u = spawnUnit('az', user, getPic(user, avatar)); u.hp = 2; u.chat = true;
+}
+
+// ================= 👋 YENİ GƏLƏNLƏR =================
+let joins = []; const joinSeen = new Set();
+function onJoin({ user, avatar }) {
+  if (joinSeen.has(user)) return; joinSeen.add(user);
+  joins.push({ user, pic: getPic(user, avatar), t: 5 }); if (joins.length > 4) joins.shift();
+}
+function drawJoins(dt) {
+  joins.forEach(j => j.t -= dt); joins = joins.filter(j => j.t > 0);
+  joins.forEach((j, i) => { const y = 1180 + i * 56, a = Math.min(1, j.t, (5 - j.t) * 4); ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(20, y - 24, 400, 48);
+    drawPic(j.pic, 46, y, 18); txt(`👋 ${j.user.slice(0, 14)} döyüşə qoşuldu`, 74, y, 22, '#fff', 'left'); });
+  ctx.globalAlpha = 1;
+}
+
+// ================= ⏳ GÖZLƏNTİ SAYĞACLARI =================
+function drawUpcoming() {
+  if (state !== 'play') return;
+  const items = [];
+  if (!chest) items.push(`💰 Sandıq ${fmtT(Math.max(0, chestT))}`);
+  items.forEach((s, i) => txt(s, W - 20, 340 + i * 34, 24, '#fff', 'right'));
+}
+
+// ================= 💀 CƏSƏDLƏR + QIĞILCIM =================
+let corpses = [];
+function addCorpse(u) { corpses.push({ x: u.x, y: u.y, az: u.side === 'az', t: 2.5, dir: Math.random() < .5 ? -1 : 1, fall: 0 }); if (corpses.length > 60) corpses.shift(); }
+function drawCorpses(dt) {
+  for (const c of corpses) {
+    c.t -= dt; c.fall = Math.min(1, c.fall + dt * 4);
+    ctx.globalAlpha = Math.min(1, c.t); ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.dir * c.fall * 1.5);
+    ctx.fillStyle = c.az ? '#1e5c96' : '#55585e'; ctx.fillRect(-14, -70, 28, 44);
+    ctx.fillStyle = '#2b2b33'; ctx.fillRect(-12, -28, 10, 26); ctx.fillRect(2, -28, 10, 26);
+    ctx.fillStyle = '#e0b48a'; ctx.beginPath(); ctx.arc(0, -84, 14, 0, 7); ctx.fill();
+    ctx.fillStyle = c.az ? '#2a1d14' : '#707780'; ctx.fillRect(-15, -100, 30, 12);
+    ctx.restore();
+    if (c.fall >= 1 && c.t > 2) { ctx.strokeStyle = '#ddd'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(c.x + c.dir * 30, c.y - 4); ctx.lineTo(c.x + c.dir * 80, c.y + 4); ctx.stroke(); }
+  }
+  ctx.globalAlpha = 1; corpses = corpses.filter(c => c.t > 0);
+}
+function sparks(x, y) { for (let i = 0; i < 5; i++) parts.push({ x, y, vx: (Math.random() - .5) * 400, vy: -Math.random() * 300, t: .25, c: Math.random() < .5 ? '#fff6a0' : '#ffb347', sz: 5 }); }
+
+// ================= 🏰 QALANIN DAĞILMASI =================
+function castleCollapse() {
+  for (let i = 0; i < 70; i++) parts.push({ x: CASTLE.x + Math.random() * CASTLE.w, y: CASTLE.y + Math.random() * CASTLE.h * .8,
+    vx: (Math.random() - .5) * 700, vy: -200 - Math.random() * 600, t: 2.2, c: ['#a8875a', '#7d6440', '#c9a26b', '#5a4630'][(Math.random() * 4) | 0], sz: 12 + Math.random() * 26 });
+  for (let i = 0; i < 25; i++) parts.push({ x: CASTLE.x + Math.random() * CASTLE.w, y: GATE_Y - Math.random() * 60, vx: (Math.random() - .5) * 200, vy: -40 - Math.random() * 60,
+    t: 2.5, c: 'rgba(160,140,110,.45)', conf: 1, sz: 50 + Math.random() * 50 });
+  shake = 40; SFX.nuke();
 }
 
 // ================= 📣 DÖYÜŞ NƏRƏSİ (şərhlərlə dolan ortaq zolaq) =================
@@ -740,7 +791,7 @@ function drawArchers() {
     ctx.fillStyle = '#333'; ctx.fillRect(x - 12, y - 52, 24, 8);
     ctx.strokeStyle = '#6b4a24'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x + 14, y - 22, 18, -1.3, 1.3); ctx.stroke(); }
 }
-function capture() { state = 'captured'; stateT = 0;
+function capture() { state = 'captured'; stateT = 0; castleCollapse();
   const rec = !STATS.best || roundT < STATS.best;
   STATS.conquered++; if (rec) STATS.best = roundT; saveStats();
   lastWin = { time: roundT, record: rec, next: Math.min(CFG.maxLivesCap, CFG.baseLives + round * CFG.livesPerRound) };
@@ -795,7 +846,7 @@ function update(dt) {
     let foe = null, fd = 1e9;
     for (const o of units) if (!o.dead && o.side !== u.side) { const d = Math.hypot(o.x - u.x, o.y - u.y); if (d < fd) { fd = d; foe = o; } }
     if (foe && fd < 55) {                              // qılınc döyüşü
-      if (u.cd <= 0) { u.cd = .8; u.swing = 1; SFX.sword(); foe.hp -= u.side === 'az' ? ((u.pic && !u.chat) ? 2 : 1) * furyMul() : 1; if (foe.hp <= 0) killUnit(foe, u.name); }
+      if (u.cd <= 0) { u.cd = .8; u.swing = 1; SFX.sword(); sparks((u.x + foe.x) / 2, (u.y + foe.y) / 2 - 60); foe.hp -= u.side === 'az' ? ((u.pic && !u.chat) ? 2 : 1) * furyMul() : 1; if (foe.hp <= 0) killUnit(foe, u.name); }
     } else if (u.side === 'az' && u.y <= GATE_Y + 15) { // qalanı vur
       if (u.cd <= 0) { u.cd = 1; u.swing = 1; hitCastle(((u.pic && !u.chat) ? 2 : 1) * furyMul(), u.name); u.hp--; if (u.hp <= 0) killUnit(u); }
     } else {
@@ -1163,6 +1214,7 @@ function draw() {
   if (shake > .5) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
   drawBg(); drawCastle(); drawArchers();
   units.sort((a, b) => a.y - b.y).forEach(drawUnit);
+  drawCorpses(frameDt);
   drawChest();
   tanks.forEach(drawTank);
   rams.forEach(drawRam);
@@ -1175,7 +1227,7 @@ function draw() {
   drawAtmos();
   for (const f of floaters) txt(f.txt, f.x, f.y, f.s, f.c);
   ctx.restore();
-  drawHud(); drawCombo(); drawCry(); drawAnnounce(frameDt); drawNuke();
+  drawHud(); drawCombo(); drawCry(); drawJoins(frameDt); drawUpcoming(); drawAnnounce(frameDt); drawNuke();
   if (state === 'captured' && stateT > 4.5) {
     ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 1030, W, 620);
     const s = 1 + Math.sin(stateT * 4) * .04;
@@ -1243,6 +1295,7 @@ addEventListener('keydown', e => {
   if (e.key.toLowerCase() === 'g') chestT = 0;
   if (e.key.toLowerCase() === 's') onShare({ user: rnd() });
   if (e.key.toLowerCase() === 'c') onChat({ user: rnd() + ((Math.random() * 99) | 0) });
+  if (e.key.toLowerCase() === 'j') onJoin({ user: 'Qonaq' + ((Math.random() * 999) | 0) });
   if (e.key.toLowerCase() === 'm') SFX.toggle();   // səsi aç/bağla
   if (e.key.toLowerCase() === 'k') hitCastle(lives, rnd() && [...board.keys()].pop());   // test: qalanı dərhal al
   if (e.key.toLowerCase() === 'y') timeLeft = 33;                                  // test: son 30 saniyə
@@ -1260,7 +1313,7 @@ let bridgeState = 'off';   // off | waiting | connected | test
   ws.onopen = () => { bridgeState = 'waiting'; };
   ws.onmessage = m => { let e; try { e = JSON.parse(m.data); } catch (_) { return; }
     if (e.type === 'gift') onGift(e); else if (e.type === 'like') onLike(e.user);
-    else if (e.type === 'follow') onFollow(e); else if (e.type === 'share') onShare(e); else if (e.type === 'chat') onChat(e);
+    else if (e.type === 'follow') onFollow(e); else if (e.type === 'share') onShare(e); else if (e.type === 'chat') onChat(e); else if (e.type === 'join') onJoin(e);
     else if (e.type === 'status') bridgeState = e.tiktok; };
   ws.onclose = () => { bridgeState = 'off'; setTimeout(connectBridge, 3000); };
   ws.onerror = () => {};

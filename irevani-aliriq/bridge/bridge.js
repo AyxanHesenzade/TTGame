@@ -101,6 +101,7 @@ if (TEST) {
     send({ type: 'gift', user, id: user, avatar: '', coins, giftName, count: 1 });
     for (let k = 0; k < 5; k++) likeQueue.push(user);
     if (i % 4 === 0) send({ type: 'chat', user: names[(i + 2) % names.length], avatar: '', text: 'hücum!' });
+    if (i % 3 === 0) send({ type: 'join', user: 'Qonaq' + i, avatar: '' });
     if (i % 9 === 0) send({ type: 'follow', user: 'YeniDost' + i, avatar: '' });
     if (i % 11 === 0) send({ type: 'share', user: names[(i + 1) % names.length], avatar: '' });
   }, 2000);
@@ -138,6 +139,7 @@ async function startTikTok() {
     conn.on(WebcastEvent.FOLLOW, d => { const { nick, avatar } = userInfo(d.user); log(`➕ ${nick} izləməyə başladı`); send({ type: 'follow', user: nick, avatar }); });
     conn.on(WebcastEvent.SHARE, d => { const { nick, avatar } = userInfo(d.user); log(`🔗 ${nick} paylaşdı`); send({ type: 'share', user: nick, avatar }); });
     conn.on(WebcastEvent.CHAT, d => { const { nick, avatar } = userInfo(d.user); send({ type: 'chat', user: nick, avatar, text: String(d.comment || '').slice(0, 80) }); });
+    conn.on(WebcastEvent.MEMBER, d => { const { nick, avatar } = userInfo(d.user); send({ type: 'join', user: nick, avatar }); });
     conn.on(WebcastEvent.STREAM_END, () => { log('📴 Yayım bitdi'); retry(15, 'Yayım bitdi'); });
     conn.on(ControlEvent?.DISCONNECTED ?? 'disconnected', () => retry(5, 'Bağlantı qopdu'));
     conn.on(ControlEvent?.ERROR ?? 'error', e => log('⚠ TikTok xətası:', e?.message || e?.info || e));
